@@ -1,0 +1,17 @@
+{
+  "name": "Mandala Tugas Harian",
+  "short_name": "Mandala Task",
+  "description": "Sistem online untuk memberikan tugas harian dan memonitor progress tim.",
+  "start_url": ".",
+  "display": "standalone",
+  "background_color": "#f5f7fa",
+  "theme_color": "#101820",
+  "icons": [
+    {
+      "src": "icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ]
+}
