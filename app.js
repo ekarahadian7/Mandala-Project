@@ -3,7 +3,7 @@ const ARCHIVE_KEY = "mandalaTaskArchive.v1";
 const SETTINGS_KEY = "mandalaTaskSettings.v1";
 const HIDDEN_DATES_KEY = "mandalaTaskHiddenDates.v1";
 const CLIENT_ID = `client-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-const progressNoteTimers = new Map();
+const projectNoteTimers = new Map();
 
 const statuses = [
   { key: "todo", label: "Belum Mulai" },
@@ -40,7 +40,7 @@ const els = {
   activeCount: document.querySelector("#activeCount"),
   doneCount: document.querySelector("#doneCount"),
   overdueCount: document.querySelector("#overdueCount"),
-  progressNoteCount: document.querySelector("#progressNoteCount"),
+  projectNoteCount: document.querySelector("#projectNoteCount"),
   taskForm: document.querySelector("#taskForm"),
   taskId: document.querySelector("#taskId"),
   taskTitle: document.querySelector("#taskTitle"),
@@ -49,9 +49,9 @@ const els = {
   taskDueDate: document.querySelector("#taskDueDate"),
   taskPriority: document.querySelector("#taskPriority"),
   taskStatus: document.querySelector("#taskStatus"),
-  taskProgressNote: document.querySelector("#taskProgressNote"),
+  taskProjectNote: document.querySelector("#taskProjectNote"),
   taskReminderAt: document.querySelector("#taskReminderAt"),
-  taskUpdate: document.querySelector("#taskUpdate"),
+  taskDocuments: document.querySelector("#taskDocuments"),
   taskNotes: document.querySelector("#taskNotes"),
   formTitle: document.querySelector("#formTitle"),
   submitTaskButton: document.querySelector("#submitTaskButton"),
@@ -119,11 +119,8 @@ els.taskForm.addEventListener("submit", (event) => {
 els.resetFormButton.addEventListener("click", resetForm);
 els.markDoneButton.addEventListener("click", () => {
   els.taskStatus.value = "done";
-  if (!els.taskProgressNote.value.trim()) {
-    els.taskProgressNote.value = "Selesai.";
-  }
-  if (!els.taskUpdate.value.trim()) {
-    els.taskUpdate.value = "Tugas selesai.";
+  if (!els.taskProjectNote.value.trim()) {
+    els.taskProjectNote.value = "Selesai.";
   }
 });
 
@@ -159,15 +156,15 @@ els.taskTableBody.addEventListener("click", (event) => {
 });
 
 els.taskTableBody.addEventListener("change", (event) => {
-  const input = event.target.closest("[data-progress-note-input]");
+  const input = event.target.closest("[data-project-note-input]");
   if (!input) return;
-  updateTaskProgressNote(input.dataset.id, input.value, { forceUpdateEntry: true });
+  updateTaskProjectNote(input.dataset.id, input.value, { forceUpdateEntry: true });
 });
 
 els.taskTableBody.addEventListener("input", (event) => {
-  const input = event.target.closest("[data-progress-note-input]");
+  const input = event.target.closest("[data-project-note-input]");
   if (!input) return;
-  scheduleProgressNoteSave(input.dataset.id, input.value);
+  scheduleProjectNoteSave(input.dataset.id, input.value);
 });
 
 render();
@@ -229,15 +226,15 @@ function loadTasks() {
   const tomorrow = addDays(today, 1);
   const yesterday = addDays(today, -1);
   return [
-    sampleTask("Finalisasi checklist dokumen PBG", "PBG Villa Maharani", "Wahyu", today, "high", "doing", "MEP masih menunggu revisi dari tim gambar.", "Checklist struktur dan arsitektur sudah dicek, MEP masih menunggu revisi."),
-    sampleTask("Follow up approval invoice termin", "Administrasi Mandala", "Ayu", today, "medium", "review", "Draft invoice siap, menunggu konfirmasi nominal.", "Draft pesan dan invoice sudah siap, menunggu konfirmasi nominal."),
-    sampleTask("Survey kebutuhan gambar as-built", "SLF Apotek BIA", "Made", tomorrow, "medium", "todo", "Jadwal survey sudah dikonfirmasi dengan pihak lokasi.", "Jadwal survey sudah dikonfirmasi dengan pihak lokasi."),
-    sampleTask("Rekap progress mingguan untuk owner", "PBG Villa Maharani", "Indra", yesterday, "high", "doing", "Data dari tim gambar sudah masuk sebagian.", "Data dari tim gambar sudah masuk sebagian."),
-    sampleTask("Upload backup file proyek ke drive", "Administrasi Mandala", "Ayu", today, "low", "done", "Backup dokumen selesai diunggah.", "Backup dokumen selesai diunggah."),
+    sampleTask("Finalisasi checklist dokumen PBG", "PBG Villa Maharani", "Wahyu", today, "high", "doing", "MEP masih menunggu revisi dari tim gambar.", ""),
+    sampleTask("Follow up approval invoice termin", "Administrasi Mandala", "Ayu", today, "medium", "review", "Draft invoice siap, menunggu konfirmasi nominal.", ""),
+    sampleTask("Survey kebutuhan gambar as-built", "SLF Apotek BIA", "Made", tomorrow, "medium", "todo", "Jadwal survey sudah dikonfirmasi dengan pihak lokasi.", ""),
+    sampleTask("Rekap progress mingguan untuk owner", "PBG Villa Maharani", "Indra", yesterday, "high", "doing", "Data dari tim gambar sudah masuk sebagian.", ""),
+    sampleTask("Upload backup file proyek ke drive", "Administrasi Mandala", "Ayu", today, "low", "done", "Backup dokumen selesai diunggah.", ""),
   ];
 }
 
-function sampleTask(title, project, assignee, dueDate, priority, status, progressNote, updateText) {
+function sampleTask(title, project, assignee, dueDate, priority, status, projectNote, documents) {
   return {
     id: createId(),
     title,
@@ -246,9 +243,10 @@ function sampleTask(title, project, assignee, dueDate, priority, status, progres
     dueDate,
     priority,
     status,
-    progressNote,
+    projectNote,
+    documents,
     notes: "",
-    updates: [{ date: todayInput(), text: updateText, progressNote }],
+    updates: [{ date: todayInput(), text: "Tugas dibuat.", projectNote }],
     reminderAt: "",
     alarmFiredAt: "",
     createdAt: new Date().toISOString(),
@@ -259,17 +257,17 @@ function sampleTask(title, project, assignee, dueDate, priority, status, progres
 function saveTaskFromForm() {
   const id = els.taskId.value || createId();
   const existing = getTask(id);
-  const progressNote = els.taskProgressNote.value.trim();
+  const projectNote = els.taskProjectNote.value.trim();
+  const documents = els.taskDocuments.value.trim();
   const status = els.taskStatus.value;
-  const updateText = els.taskUpdate.value.trim();
   const updates = existing ? [...(existing.updates || [])] : [];
   const reminderAt = els.taskReminderAt.value;
 
-  if (updateText || !existing) {
+  if (!existing || documents !== (existing.documents || "") || projectNote !== (existing.projectNote || "")) {
     updates.push({
       date: state.focusDate,
-      text: updateText || "Tugas dibuat.",
-      progressNote,
+      text: existing ? "Tugas diperbarui." : "Tugas dibuat.",
+      projectNote,
     });
   }
 
@@ -281,7 +279,8 @@ function saveTaskFromForm() {
     dueDate: els.taskDueDate.value,
     priority: els.taskPriority.value,
     status,
-    progressNote,
+    projectNote,
+    documents,
     reminderAt,
     alarmFiredAt: existing && existing.reminderAt === reminderAt ? existing.alarmFiredAt || "" : "",
     notes: els.taskNotes.value.trim(),
@@ -311,9 +310,9 @@ function resetForm() {
   els.taskDueDate.value = state.focusDate;
   els.taskPriority.value = "medium";
   els.taskStatus.value = "todo";
-  els.taskProgressNote.value = "";
+  els.taskProjectNote.value = "";
   els.taskReminderAt.value = "";
-  els.taskUpdate.value = "";
+  els.taskDocuments.value = "";
   els.taskNotes.value = "";
   els.formTitle.textContent = "Tambah Tugas";
   els.submitTaskButton.textContent = "Simpan Tugas";
@@ -330,9 +329,9 @@ function editTask(id) {
   els.taskDueDate.value = task.dueDate;
   els.taskPriority.value = task.priority;
   els.taskStatus.value = task.status;
-  els.taskProgressNote.value = task.progressNote || "";
+  els.taskProjectNote.value = task.projectNote || "";
   els.taskReminderAt.value = task.reminderAt || "";
-  els.taskUpdate.value = "";
+  els.taskDocuments.value = task.documents || "";
   els.taskNotes.value = task.notes || "";
   els.formTitle.textContent = "Edit Tugas";
   els.submitTaskButton.textContent = "Update Tugas";
@@ -351,7 +350,7 @@ function completeTask(id) {
   const task = getTask(id);
   if (!task) return;
   task.status = "done";
-  if (!task.progressNote) task.progressNote = "Selesai.";
+  if (!task.projectNote) task.projectNote = "Selesai.";
   task.alarmFiredAt = task.reminderAt || task.alarmFiredAt || "";
   addUpdate(task, "Tugas ditandai selesai.");
   persist();
@@ -359,28 +358,28 @@ function completeTask(id) {
   showToast("Tugas selesai.");
 }
 
-function scheduleProgressNoteSave(id, value) {
-  window.clearTimeout(progressNoteTimers.get(id));
-  progressNoteTimers.set(id, window.setTimeout(() => {
-    updateTaskProgressNote(id, value, { renderAfter: false, silent: true });
-    progressNoteTimers.delete(id);
+function scheduleProjectNoteSave(id, value) {
+  window.clearTimeout(projectNoteTimers.get(id));
+  projectNoteTimers.set(id, window.setTimeout(() => {
+    updateTaskProjectNote(id, value, { renderAfter: false, silent: true });
+    projectNoteTimers.delete(id);
   }, 700));
 }
 
-function updateTaskProgressNote(id, value, options = {}) {
+function updateTaskProjectNote(id, value, options = {}) {
   const task = getTask(id);
   if (!task) return;
   const nextNote = String(value || "").trim();
-  if ((task.progressNote || "") === nextNote && !options.forceUpdateEntry) return;
+  if ((task.projectNote || "") === nextNote && !options.forceUpdateEntry) return;
 
-  task.progressNote = nextNote;
+  task.projectNote = nextNote;
   task.updatedAt = new Date().toISOString();
   if (!options.silent) {
-    addUpdate(task, nextNote ? `Keterangan progress: ${nextNote}` : "Keterangan progress dikosongkan.");
+    addUpdate(task, nextNote ? `Catatan project: ${nextNote}` : "Catatan project dikosongkan.");
   }
   persist();
   if (options.renderAfter !== false) render();
-  if (!options.silent) showToast("Keterangan progress diperbarui.");
+  if (!options.silent) showToast("Catatan project diperbarui.");
 }
 
 function deleteTask(id) {
@@ -398,7 +397,7 @@ function updateStatus(id, status) {
   if (!task || task.status === status) return;
 
   task.status = status;
-  if (status === "done" && !task.progressNote) task.progressNote = "Selesai.";
+  if (status === "done" && !task.projectNote) task.projectNote = "Selesai.";
   addUpdate(task, `Status berubah ke ${statusLabel(status)}.`);
   persist();
   render();
@@ -409,7 +408,7 @@ function addUpdate(task, text) {
   task.updatedAt = new Date().toISOString();
   task.updates = [
     ...(task.updates || []),
-    { date: state.focusDate, text, progressNote: task.progressNote || "" },
+    { date: state.focusDate, text, projectNote: task.projectNote || "" },
   ];
 }
 
@@ -449,13 +448,13 @@ function renderSummary() {
   const active = state.tasks.filter((task) => task.status !== "done").length;
   const done = state.tasks.filter((task) => task.status === "done").length;
   const overdue = state.tasks.filter(isOverdue).length;
-  const withProgressNote = state.tasks.filter((task) => task.progressNote).length;
+  const withProjectNote = state.tasks.filter((task) => task.projectNote).length;
 
   els.totalCount.textContent = total;
   els.activeCount.textContent = active;
   els.doneCount.textContent = done;
   els.overdueCount.textContent = overdue;
-  els.progressNoteCount.textContent = withProgressNote;
+  els.projectNoteCount.textContent = withProjectNote;
 }
 
 function renderTable() {
@@ -543,7 +542,6 @@ function tableNoteText(total, visible, hidden, days) {
 }
 
 function renderRow(task, index) {
-  const lastUpdate = getLastUpdate(task);
   const overdue = isOverdue(task);
   const alarmDue = isAlarmDue(task);
   const rowClass = `${overdue ? "overdue" : ""} ${task.status === "done" ? "done" : ""}`.trim();
@@ -563,17 +561,17 @@ function renderRow(task, index) {
       </td>
       <td><span class="pill priority-${task.priority}">${priorities[task.priority] || "Normal"}</span></td>
       <td><span class="pill status-${task.status}">${statusLabel(task.status)}</span></td>
-      <td class="progress-note-cell">
+      <td class="project-note-cell">
         <textarea
-          data-progress-note-input
+          data-project-note-input
           data-id="${escapeAttribute(task.id)}"
           rows="2"
-          aria-label="Keterangan progress ${escapeAttribute(task.title)}"
-          placeholder="Tulis keterangan"
-        >${escapeHtml(task.progressNote || "")}</textarea>
+          aria-label="Catatan project ${escapeAttribute(task.title)}"
+          placeholder="Tulis catatan"
+        >${escapeHtml(task.projectNote || "")}</textarea>
       </td>
       <td>${renderAlarmCell(task, alarmDue)}</td>
-      <td><div class="last-update">${lastUpdate ? escapeHtml(lastUpdate.text) : "-"}</div></td>
+      <td>${renderDocumentsCell(task)}</td>
       <td>
         <div class="row-actions">
           <button class="mini-button" type="button" data-action="edit" data-id="${task.id}">Edit</button>
@@ -589,7 +587,7 @@ function renderRow(task, index) {
 function getFilteredTasks() {
   return [...state.tasks]
     .filter((task) => {
-      const search = `${task.title} ${task.project} ${task.assignee} ${task.notes} ${task.progressNote}`.toLowerCase();
+      const search = `${task.title} ${task.project} ${task.assignee} ${task.notes} ${task.projectNote} ${task.documents}`.toLowerCase();
       if (state.filters.search && !search.includes(state.filters.search)) return false;
       if (state.filters.project && task.project !== state.filters.project) return false;
       if (state.filters.assignee && task.assignee !== state.filters.assignee) return false;
@@ -657,7 +655,7 @@ function importData(event) {
 }
 
 function normalizeTask(task) {
-  const progressNote = String(task.progressNote || legacyProgressNote(task.progress) || "");
+  const projectNote = String(task.projectNote || task.progressNote || legacyProgressNote(task.progress) || "");
   return {
     id: task.id || createId(),
     title: task.title || "Tugas tanpa judul",
@@ -666,7 +664,8 @@ function normalizeTask(task) {
     dueDate: task.dueDate || todayInput(),
     priority: priorities[task.priority] ? task.priority : "medium",
     status: statuses.some((status) => status.key === task.status) ? task.status : "todo",
-    progressNote,
+    projectNote,
+    documents: String(task.documents || ""),
     reminderAt: task.reminderAt || "",
     alarmFiredAt: task.alarmFiredAt || "",
     notes: task.notes || "",
@@ -680,7 +679,7 @@ function normalizeUpdate(update) {
   return {
     date: update.date || todayInput(),
     text: update.text || "",
-    progressNote: String(update.progressNote || legacyProgressNote(update.progress) || ""),
+    projectNote: String(update.projectNote || update.progressNote || legacyProgressNote(update.progress) || ""),
   };
 }
 
@@ -771,6 +770,40 @@ function renderAlarmCell(task, alarmDue) {
       <span>${fired ? "Sudah berbunyi" : alarmDue ? "Waktunya alarm" : "Menunggu"}</span>
     </div>
   `;
+}
+
+function renderDocumentsCell(task) {
+  const documents = parseDocumentLines(task.documents);
+  if (!documents.length) return `<div class="document-cell"><span>Belum ada dokumen</span></div>`;
+
+  return `
+    <div class="document-cell">
+      ${documents.map((documentText, index) => renderDocumentItem(documentText, index)).join("")}
+    </div>
+  `;
+}
+
+function renderDocumentItem(documentText, index) {
+  if (isHttpUrl(documentText)) {
+    return `<a href="${escapeAttribute(documentText)}" target="_blank" rel="noopener">Dokumen ${index + 1}</a>`;
+  }
+  return `<span>${escapeHtml(documentText)}</span>`;
+}
+
+function parseDocumentLines(value) {
+  return String(value || "")
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+}
+
+function isHttpUrl(value) {
+  try {
+    const url = new URL(value);
+    return url.protocol === "http:" || url.protocol === "https:";
+  } catch {
+    return false;
+  }
 }
 
 async function requestAlarmPermission() {
@@ -923,7 +956,7 @@ function legacyProgressNote(value) {
   if (value === undefined || value === null || value === "") return "";
   const number = Number(value);
   if (!Number.isFinite(number)) return String(value);
-  return `Progress sebelumnya ${Math.max(0, Math.min(100, number))}%.`;
+  return `Catatan lama: progress ${Math.max(0, Math.min(100, number))}%.`;
 }
 
 function showToast(message) {
