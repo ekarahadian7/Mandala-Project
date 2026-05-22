@@ -121,6 +121,13 @@ textarea {
   resize: vertical;
 }
 
+.field-hint {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 650;
+  line-height: 1.35;
+}
+
 input:focus,
 select:focus,
 textarea:focus,
@@ -298,11 +305,27 @@ button:focus-visible {
 }
 
 .task-notes,
-.last-update,
+.document-cell,
 .alarm-cell {
   max-width: 340px;
   color: var(--muted);
   line-height: 1.42;
+}
+
+.document-cell {
+  display: grid;
+  gap: 6px;
+  min-width: 160px;
+}
+
+.document-cell a {
+  color: var(--blue);
+  font-weight: 800;
+  text-decoration: none;
+}
+
+.document-cell a:hover {
+  text-decoration: underline;
 }
 
 .alarm-cell {
@@ -423,11 +446,11 @@ button:focus-visible {
   background: #fff;
 }
 
-.progress-note-cell {
+.project-note-cell {
   min-width: 260px;
 }
 
-.progress-note-cell textarea {
+.project-note-cell textarea {
   min-width: 240px;
   min-height: 58px;
   resize: vertical;
