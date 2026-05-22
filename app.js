@@ -452,10 +452,53 @@ function renderSummary() {
 
 function renderTable() {
   const tasks = getFilteredTasks();
+  const groups = groupTasksByDate(tasks);
+  let rowNumber = 0;
+
   els.taskTableBody.innerHTML = tasks.length
-    ? tasks.map(renderRow).join("")
+    ? groups.map((group) => `
+      ${renderDateGroupRow(group)}
+      ${group.tasks.map((task) => renderRow(task, rowNumber++)).join("")}
+    `).join("")
     : `<tr><td class="empty-row" colspan="11">Belum ada tugas yang cocok dengan filter.</td></tr>`;
-  els.tableNote.textContent = `${tasks.length} tugas ditampilkan.`;
+  els.tableNote.textContent = tasks.length
+    ? `${tasks.length} tugas dalam ${groups.length} hari ditampilkan.`
+    : "0 tugas ditampilkan.";
+}
+
+function groupTasksByDate(tasks) {
+  return tasks.reduce((groups, task) => {
+    const date = task.dueDate || "Tanpa deadline";
+    const group = groups.find((item) => item.date === date);
+    if (group) {
+      group.tasks.push(task);
+    } else {
+      groups.push({ date, tasks: [task] });
+    }
+    return groups;
+  }, []);
+}
+
+function renderDateGroupRow(group) {
+  const done = group.tasks.filter((task) => task.status === "done").length;
+  const active = group.tasks.length - done;
+  const overdue = group.tasks.some(isOverdue);
+  const meta = [
+    `${group.tasks.length} tugas`,
+    active ? `${active} aktif` : "",
+    done ? `${done} selesai` : "",
+  ].filter(Boolean).join(" - ");
+
+  return `
+    <tr class="date-group-row ${overdue ? "date-group-overdue" : ""}">
+      <td colspan="11">
+        <div class="date-group-content">
+          <span class="date-group-title">${escapeHtml(dateGroupLabel(group.date))}</span>
+          <span class="date-group-meta">${escapeHtml(meta)}</span>
+        </div>
+      </td>
+    </tr>
+  `;
 }
 
 function renderRow(task, index) {
@@ -514,9 +557,13 @@ function getFilteredTasks() {
       return true;
     })
     .sort((a, b) => {
+      const priorityOrder = { high: 0, medium: 1, low: 2 };
+      if (a.dueDate !== b.dueDate) return a.dueDate.localeCompare(b.dueDate);
       if (a.status === "done" && b.status !== "done") return 1;
       if (a.status !== "done" && b.status === "done") return -1;
-      return a.dueDate.localeCompare(b.dueDate) || a.project.localeCompare(b.project);
+      return (priorityOrder[a.priority] ?? 1) - (priorityOrder[b.priority] ?? 1)
+        || a.project.localeCompare(b.project)
+        || a.title.localeCompare(b.title);
     });
 }
 
@@ -778,6 +825,15 @@ function humanDate(inputDate) {
   if (!inputDate) return "-";
   const date = new Date(`${inputDate}T00:00:00`);
   return new Intl.DateTimeFormat("id-ID", { day: "2-digit", month: "short", year: "numeric" }).format(date);
+}
+
+function dateGroupLabel(inputDate) {
+  if (!inputDate || inputDate === "Tanpa deadline") return "Tanpa deadline";
+  const label = humanDate(inputDate);
+  if (inputDate === todayInput()) return `Hari ini - ${label}`;
+  if (inputDate === addDays(todayInput(), 1)) return `Besok - ${label}`;
+  if (inputDate === addDays(todayInput(), -1)) return `Kemarin - ${label}`;
+  return label;
 }
 
 function humanDateTime(inputDateTime) {
