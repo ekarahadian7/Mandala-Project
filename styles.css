@@ -373,11 +373,27 @@ button:focus-visible {
   border-bottom: 1px solid var(--line);
 }
 
+.date-group-today td {
+  background: #eaf3ff;
+  box-shadow: inset 4px 0 0 var(--blue);
+}
+
+.date-group-hidden td {
+  background: #f9fafb;
+}
+
 .date-group-content {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
+}
+
+.date-group-main {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
 }
 
 .date-group-title {
@@ -395,6 +411,16 @@ button:focus-visible {
 
 .date-group-overdue .date-group-title {
   color: var(--red);
+}
+
+.date-group-today .date-group-title {
+  color: var(--blue);
+  font-size: 15px;
+}
+
+.date-group-toggle {
+  min-width: 96px;
+  background: #fff;
 }
 
 .progress-note-cell {
@@ -510,8 +536,18 @@ button:focus-visible {
     gap: 4px;
   }
 
+  .date-group-main {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 4px;
+  }
+
   .date-group-meta {
     white-space: normal;
+  }
+
+  .date-group-toggle {
+    width: 100%;
   }
 }
 
