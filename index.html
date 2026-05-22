@@ -94,9 +94,14 @@
             Bunyi alarm
           </label>
           <label class="wide">
-            Dokumen tugas / Google Drive
-            <textarea id="taskDocuments" rows="2" placeholder="Tempel link Google Drive dokumen, satu link per baris"></textarea>
-            <span class="field-hint">Upload dokumen ke Google Drive, lalu tempel link baginya di sini.</span>
+            Dokumen tugas
+            <input id="taskDocumentsInput" type="file" multiple hidden>
+            <div class="drop-zone" id="documentDropZone" role="button" tabindex="0">
+              <strong>Drag & drop file di sini</strong>
+              <span>atau klik untuk pilih file dari komputer</span>
+            </div>
+            <div class="document-list" id="documentList"></div>
+            <span class="field-hint">File yang diupload akan muncul di tabel dan bisa dibuka staf.</span>
           </label>
           <label class="wide">
             Catatan detail
