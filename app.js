@@ -3,6 +3,7 @@ const ARCHIVE_KEY = "mandalaTaskArchive.v1";
 const SETTINGS_KEY = "mandalaTaskSettings.v1";
 const HIDDEN_DATES_KEY = "mandalaTaskHiddenDates.v1";
 const CLIENT_ID = `client-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+const UPLOAD_CHUNK_SIZE = 4 * 1024 * 1024;
 const projectNoteTimers = new Map();
 
 const statuses = [
@@ -427,28 +428,58 @@ async function handleDocumentFiles(fileList) {
     renderFormDocuments();
     showToast(`${uploaded.length} dokumen diupload.`);
   } catch {
-    showToast("Upload gagal. Coba file lebih kecil atau ulangi lagi.");
+    showToast("Upload gagal. Coba ulangi atau gunakan file yang lebih kecil.");
   } finally {
     setDocumentDropZoneBusy(false);
   }
 }
 
 async function uploadDocuments(files) {
-  const payload = new FormData();
-  files.forEach((file) => payload.append("documents", file));
-  const response = await fetch("/api/uploads", {
-    method: "POST",
-    body: payload,
-  });
-  if (!response.ok) throw new Error("Upload failed");
-  const data = await response.json();
-  if (!Array.isArray(data.files)) throw new Error("Invalid upload response");
-  return data.files;
+  const uploaded = [];
+  for (const file of files) {
+    uploaded.push(await uploadSingleDocument(file));
+  }
+  return uploaded;
 }
 
-function setDocumentDropZoneBusy(isBusy) {
+async function uploadSingleDocument(file) {
+  const uploadId = createId();
+  const totalChunks = Math.max(1, Math.ceil(file.size / UPLOAD_CHUNK_SIZE));
+  let uploadedFile = null;
+
+  for (let index = 0; index < totalChunks; index += 1) {
+    const start = index * UPLOAD_CHUNK_SIZE;
+    const end = Math.min(file.size, start + UPLOAD_CHUNK_SIZE);
+    const chunk = file.slice(start, end);
+    const percent = Math.round(((index + 1) / totalChunks) * 100);
+    setDocumentDropZoneBusy(true, `Mengupload ${file.name || "dokumen"} ${percent}%`);
+
+    const response = await fetch("/api/uploads/chunk", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/octet-stream",
+        "X-Upload-Id": uploadId,
+        "X-File-Name": encodeURIComponent(file.name || "dokumen"),
+        "X-File-Type": encodeURIComponent(file.type || "application/octet-stream"),
+        "X-File-Size": String(file.size || 0),
+        "X-Chunk-Index": String(index),
+        "X-Total-Chunks": String(totalChunks),
+      },
+      body: chunk,
+    });
+
+    if (!response.ok) throw new Error("Upload failed");
+    const data = await response.json();
+    if (data.complete) uploadedFile = data.file;
+  }
+
+  if (!uploadedFile) throw new Error("Upload did not finish");
+  return uploadedFile;
+}
+
+function setDocumentDropZoneBusy(isBusy, label = "Mengupload dokumen...") {
   els.documentDropZone.classList.toggle("is-uploading", isBusy);
-  els.documentDropZone.querySelector("strong").textContent = isBusy ? "Mengupload dokumen..." : "Drag & drop file di sini";
+  els.documentDropZone.querySelector("strong").textContent = isBusy ? label : "Drag & drop file di sini";
 }
 
 function renderFormDocuments() {
