@@ -86,7 +86,7 @@ async function writeData(data) {
 
 function normalizeTask(task) {
   const now = new Date().toISOString();
-  const progressNote = String(task.progressNote || legacyProgressNote(task.progress) || "");
+  const projectNote = String(task.projectNote || task.progressNote || legacyProgressNote(task.progress) || "");
   return {
     id: String(task.id || `task-${Date.now()}-${Math.random().toString(16).slice(2)}`),
     title: String(task.title || "Tugas tanpa judul"),
@@ -95,7 +95,8 @@ function normalizeTask(task) {
     dueDate: String(task.dueDate || new Date().toISOString().slice(0, 10)),
     priority: ["high", "medium", "low"].includes(task.priority) ? task.priority : "medium",
     status: ["todo", "doing", "review", "done"].includes(task.status) ? task.status : "todo",
-    progressNote,
+    projectNote,
+    documents: String(task.documents || ""),
     reminderAt: String(task.reminderAt || ""),
     alarmFiredAt: String(task.alarmFiredAt || ""),
     notes: String(task.notes || ""),
@@ -109,7 +110,7 @@ function normalizeUpdate(update) {
   return {
     date: String(update.date || new Date().toISOString().slice(0, 10)),
     text: String(update.text || ""),
-    progressNote: String(update.progressNote || legacyProgressNote(update.progress) || ""),
+    projectNote: String(update.projectNote || update.progressNote || legacyProgressNote(update.progress) || ""),
   };
 }
 
@@ -117,7 +118,7 @@ function legacyProgressNote(value) {
   if (value === undefined || value === null || value === "") return "";
   const number = Number(value);
   if (!Number.isFinite(number)) return String(value);
-  return `Progress sebelumnya ${Math.max(0, Math.min(100, number))}%.`;
+  return `Catatan lama: progress ${Math.max(0, Math.min(100, number))}%.`;
 }
 
 function connectEvents(request, response) {
