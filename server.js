@@ -10,8 +10,11 @@ const ROOT = __dirname;
 const DATA_DIR = path.join(ROOT, "data");
 const DATA_FILE = path.join(DATA_DIR, "tasks.json");
 const UPLOAD_DIR = path.join(DATA_DIR, "uploads");
+const UPLOAD_CHUNK_DIR = path.join(DATA_DIR, "upload-chunks");
 const MAX_JSON_BODY_SIZE = 5 * 1024 * 1024;
 const MAX_UPLOAD_BODY_SIZE = 40 * 1024 * 1024;
+const MAX_UPLOAD_CHUNK_SIZE = 6 * 1024 * 1024;
+const MAX_UPLOAD_FILE_SIZE = 1024 * 1024 * 1024;
 
 const clients = new Set();
 
@@ -62,6 +65,11 @@ const server = http.createServer(async (request, response) => {
     if (url.pathname === "/api/uploads" && request.method === "POST") {
       const files = await handleUploads(request);
       return sendJson(response, { files });
+    }
+
+    if (url.pathname === "/api/uploads/chunk" && request.method === "POST") {
+      const file = await handleUploadChunk(request);
+      return sendJson(response, file ? { complete: true, file } : { complete: false });
     }
 
     if (url.pathname === "/api/events" && request.method === "GET") {
@@ -207,6 +215,80 @@ async function handleUploads(request) {
   return files;
 }
 
+async function handleUploadChunk(request) {
+  const uploadId = sanitizeUploadId(request.headers["x-upload-id"]);
+  const originalName = sanitizeFileName(decodeHeader(request.headers["x-file-name"]) || "dokumen");
+  const fileType = decodeHeader(request.headers["x-file-type"]) || "application/octet-stream";
+  const fileSize = toSafeInteger(request.headers["x-file-size"], 0);
+  const chunkIndex = toSafeInteger(request.headers["x-chunk-index"], -1);
+  const totalChunks = toSafeInteger(request.headers["x-total-chunks"], 0);
+
+  if (!uploadId || chunkIndex < 0 || totalChunks < 1 || chunkIndex >= totalChunks) {
+    throw new Error("Invalid upload chunk metadata");
+  }
+
+  if (fileSize > MAX_UPLOAD_FILE_SIZE || totalChunks > 10000) {
+    throw new Error("Upload file too large");
+  }
+
+  const body = await readBodyBuffer(request, MAX_UPLOAD_CHUNK_SIZE);
+  const chunkDir = path.join(UPLOAD_CHUNK_DIR, uploadId);
+  await fs.mkdir(chunkDir, { recursive: true });
+  await fs.writeFile(path.join(chunkDir, `${chunkIndex}.part`), body);
+
+  const complete = await uploadChunksComplete(chunkDir, totalChunks);
+  if (!complete) return null;
+
+  return assembleUploadChunks({
+    chunkDir,
+    totalChunks,
+    originalName,
+    fileType,
+    fileSize,
+  });
+}
+
+async function uploadChunksComplete(chunkDir, totalChunks) {
+  for (let index = 0; index < totalChunks; index += 1) {
+    try {
+      const stat = await fs.stat(path.join(chunkDir, `${index}.part`));
+      if (!stat.isFile()) return false;
+    } catch (error) {
+      if (error.code === "ENOENT") return false;
+      throw error;
+    }
+  }
+  return true;
+}
+
+async function assembleUploadChunks({ chunkDir, totalChunks, originalName, fileType, fileSize }) {
+  await fs.mkdir(UPLOAD_DIR, { recursive: true });
+  const storedName = `${Date.now()}-${crypto.randomBytes(5).toString("hex")}-${originalName}`;
+  const filePath = path.join(UPLOAD_DIR, storedName);
+  const fileHandle = await fs.open(filePath, "w");
+  let totalSize = 0;
+
+  try {
+    for (let index = 0; index < totalChunks; index += 1) {
+      const chunk = await fs.readFile(path.join(chunkDir, `${index}.part`));
+      totalSize += chunk.length;
+      await fileHandle.write(chunk);
+    }
+  } finally {
+    await fileHandle.close();
+  }
+
+  await fs.rm(chunkDir, { recursive: true, force: true });
+
+  return {
+    name: originalName,
+    url: `/uploads/${encodeURIComponent(storedName)}`,
+    size: fileSize || totalSize,
+    type: fileType,
+    uploadedAt: new Date().toISOString(),
+  };
+}
+
 function parseMultipart(buffer, boundary) {
   const boundaryText = `--${boundary}`;
   return buffer.toString("binary")
@@ -240,6 +322,26 @@ function sanitizeFileName(fileName) {
     .replace(/^-+|-+$/g, "")
     .slice(0, 120);
   return safe || "dokumen";
+}
+
+function sanitizeUploadId(value) {
+  const safe = String(value || "")
+    .replace(/[^\w.-]+/g, "")
+    .slice(0, 80);
+  return safe;
+}
+
+function decodeHeader(value) {
+  try {
+    return decodeURIComponent(String(value || ""));
+  } catch {
+    return String(value || "");
+  }
+}
+
+function toSafeInteger(value, fallback) {
+  const number = Number(value);
+  return Number.isSafeInteger(number) ? number : fallback;
 }
 
 function connectEvents(request, response) {
