@@ -1,4 +1,4 @@
-const CACHE_NAME = "mandala-task-system-v5";
+const CACHE_NAME = "mandala-task-system-v6";
 const ASSETS = [
   "./",
   "./index.html",
