@@ -23,6 +23,7 @@ const state = {
   focusDate: todayInput(),
   settings: loadSettings(),
   hiddenDates: loadHiddenDates(),
+  formDocuments: [],
   serverOnline: false,
   lastServerErrorAt: 0,
   filters: {
@@ -51,7 +52,9 @@ const els = {
   taskStatus: document.querySelector("#taskStatus"),
   taskProjectNote: document.querySelector("#taskProjectNote"),
   taskReminderAt: document.querySelector("#taskReminderAt"),
-  taskDocuments: document.querySelector("#taskDocuments"),
+  taskDocumentsInput: document.querySelector("#taskDocumentsInput"),
+  documentDropZone: document.querySelector("#documentDropZone"),
+  documentList: document.querySelector("#documentList"),
   taskNotes: document.querySelector("#taskNotes"),
   formTitle: document.querySelector("#formTitle"),
   submitTaskButton: document.querySelector("#submitTaskButton"),
@@ -127,6 +130,34 @@ els.markDoneButton.addEventListener("click", () => {
 els.exportButton.addEventListener("click", exportData);
 els.importButton.addEventListener("click", () => els.importInput.click());
 els.importInput.addEventListener("change", importData);
+els.documentDropZone.addEventListener("click", () => els.taskDocumentsInput.click());
+els.documentDropZone.addEventListener("keydown", (event) => {
+  if (event.key === "Enter" || event.key === " ") {
+    event.preventDefault();
+    els.taskDocumentsInput.click();
+  }
+});
+els.documentDropZone.addEventListener("dragover", (event) => {
+  event.preventDefault();
+  els.documentDropZone.classList.add("drag-over");
+});
+els.documentDropZone.addEventListener("dragleave", () => {
+  els.documentDropZone.classList.remove("drag-over");
+});
+els.documentDropZone.addEventListener("drop", (event) => {
+  event.preventDefault();
+  els.documentDropZone.classList.remove("drag-over");
+  handleDocumentFiles(event.dataTransfer.files);
+});
+els.taskDocumentsInput.addEventListener("change", () => {
+  handleDocumentFiles(els.taskDocumentsInput.files);
+  els.taskDocumentsInput.value = "";
+});
+els.documentList.addEventListener("click", (event) => {
+  const removeButton = event.target.closest("[data-document-remove]");
+  if (!removeButton) return;
+  removeFormDocument(Number(removeButton.dataset.documentRemove));
+});
 els.alarmPermissionButton.addEventListener("click", requestAlarmPermission);
 els.alarmSoundToggle.addEventListener("change", () => {
   state.settings.soundEnabled = els.alarmSoundToggle.checked;
@@ -168,6 +199,7 @@ els.taskTableBody.addEventListener("input", (event) => {
 });
 
 render();
+renderFormDocuments();
 window.setInterval(checkAlarms, 30000);
 window.setTimeout(checkAlarms, 1200);
 
@@ -244,7 +276,7 @@ function sampleTask(title, project, assignee, dueDate, priority, status, project
     priority,
     status,
     projectNote,
-    documents,
+    documents: normalizeDocuments(documents),
     notes: "",
     updates: [{ date: todayInput(), text: "Tugas dibuat.", projectNote }],
     reminderAt: "",
@@ -258,12 +290,12 @@ function saveTaskFromForm() {
   const id = els.taskId.value || createId();
   const existing = getTask(id);
   const projectNote = els.taskProjectNote.value.trim();
-  const documents = els.taskDocuments.value.trim();
+  const documents = state.formDocuments.map(normalizeDocument).filter(Boolean);
   const status = els.taskStatus.value;
   const updates = existing ? [...(existing.updates || [])] : [];
   const reminderAt = els.taskReminderAt.value;
 
-  if (!existing || documents !== (existing.documents || "") || projectNote !== (existing.projectNote || "")) {
+  if (!existing || JSON.stringify(documents) !== JSON.stringify(existing.documents || []) || projectNote !== (existing.projectNote || "")) {
     updates.push({
       date: state.focusDate,
       text: existing ? "Tugas diperbarui." : "Tugas dibuat.",
@@ -312,7 +344,8 @@ function resetForm() {
   els.taskStatus.value = "todo";
   els.taskProjectNote.value = "";
   els.taskReminderAt.value = "";
-  els.taskDocuments.value = "";
+  state.formDocuments = [];
+  renderFormDocuments();
   els.taskNotes.value = "";
   els.formTitle.textContent = "Tambah Tugas";
   els.submitTaskButton.textContent = "Simpan Tugas";
@@ -331,7 +364,8 @@ function editTask(id) {
   els.taskStatus.value = task.status;
   els.taskProjectNote.value = task.projectNote || "";
   els.taskReminderAt.value = task.reminderAt || "";
-  els.taskDocuments.value = task.documents || "";
+  state.formDocuments = normalizeDocuments(task.documents);
+  renderFormDocuments();
   els.taskNotes.value = task.notes || "";
   els.formTitle.textContent = "Edit Tugas";
   els.submitTaskButton.textContent = "Update Tugas";
@@ -380,6 +414,61 @@ function updateTaskProjectNote(id, value, options = {}) {
   persist();
   if (options.renderAfter !== false) render();
   if (!options.silent) showToast("Catatan project diperbarui.");
+}
+
+async function handleDocumentFiles(fileList) {
+  const files = [...(fileList || [])].filter((file) => file.size > 0);
+  if (!files.length) return;
+
+  setDocumentDropZoneBusy(true);
+  try {
+    const uploaded = await uploadDocuments(files);
+    state.formDocuments = [...state.formDocuments, ...uploaded.map(normalizeDocument).filter(Boolean)];
+    renderFormDocuments();
+    showToast(`${uploaded.length} dokumen diupload.`);
+  } catch {
+    showToast("Upload gagal. Coba file lebih kecil atau ulangi lagi.");
+  } finally {
+    setDocumentDropZoneBusy(false);
+  }
+}
+
+async function uploadDocuments(files) {
+  const payload = new FormData();
+  files.forEach((file) => payload.append("documents", file));
+  const response = await fetch("/api/uploads", {
+    method: "POST",
+    body: payload,
+  });
+  if (!response.ok) throw new Error("Upload failed");
+  const data = await response.json();
+  if (!Array.isArray(data.files)) throw new Error("Invalid upload response");
+  return data.files;
+}
+
+function setDocumentDropZoneBusy(isBusy) {
+  els.documentDropZone.classList.toggle("is-uploading", isBusy);
+  els.documentDropZone.querySelector("strong").textContent = isBusy ? "Mengupload dokumen..." : "Drag & drop file di sini";
+}
+
+function renderFormDocuments() {
+  const documents = normalizeDocuments(state.formDocuments);
+  state.formDocuments = documents;
+  els.documentList.innerHTML = documents.length
+    ? documents.map((documentItem, index) => `
+      <div class="document-item">
+        <a href="${escapeAttribute(documentItem.url)}" target="_blank" rel="noopener">${escapeHtml(documentItem.name)}</a>
+        <span>${formatFileSize(documentItem.size)}</span>
+        <button class="mini-button" type="button" data-document-remove="${index}">Hapus</button>
+      </div>
+    `).join("")
+    : `<p>Belum ada dokumen.</p>`;
+}
+
+function removeFormDocument(index) {
+  if (!Number.isInteger(index)) return;
+  state.formDocuments = state.formDocuments.filter((_, itemIndex) => itemIndex !== index);
+  renderFormDocuments();
 }
 
 function deleteTask(id) {
@@ -587,7 +676,7 @@ function renderRow(task, index) {
 function getFilteredTasks() {
   return [...state.tasks]
     .filter((task) => {
-      const search = `${task.title} ${task.project} ${task.assignee} ${task.notes} ${task.projectNote} ${task.documents}`.toLowerCase();
+      const search = `${task.title} ${task.project} ${task.assignee} ${task.notes} ${task.projectNote} ${documentsSearchText(task.documents)}`.toLowerCase();
       if (state.filters.search && !search.includes(state.filters.search)) return false;
       if (state.filters.project && task.project !== state.filters.project) return false;
       if (state.filters.assignee && task.assignee !== state.filters.assignee) return false;
@@ -665,7 +754,7 @@ function normalizeTask(task) {
     priority: priorities[task.priority] ? task.priority : "medium",
     status: statuses.some((status) => status.key === task.status) ? task.status : "todo",
     projectNote,
-    documents: String(task.documents || ""),
+    documents: normalizeDocuments(task.documents),
     reminderAt: task.reminderAt || "",
     alarmFiredAt: task.alarmFiredAt || "",
     notes: task.notes || "",
@@ -681,6 +770,56 @@ function normalizeUpdate(update) {
     text: update.text || "",
     projectNote: String(update.projectNote || update.progressNote || legacyProgressNote(update.progress) || ""),
   };
+}
+
+function normalizeDocuments(value) {
+  if (Array.isArray(value)) return value.map(normalizeDocument).filter(Boolean);
+  return String(value || "")
+    .split(/\r?\n/)
+    .map((line, index) => normalizeDocument({ name: `Dokumen ${index + 1}`, url: line.trim() }))
+    .filter(Boolean);
+}
+
+function normalizeDocument(documentItem) {
+  if (!documentItem) return null;
+  if (typeof documentItem === "string") {
+    const text = documentItem.trim();
+    if (!text) return null;
+    return { name: fileNameFromUrl(text) || text, url: text, size: 0, type: "", uploadedAt: "" };
+  }
+  const url = String(documentItem.url || "").trim();
+  const name = String(documentItem.name || fileNameFromUrl(url) || "Dokumen").trim();
+  if (!name && !url) return null;
+  return {
+    name,
+    url,
+    size: Number(documentItem.size || 0),
+    type: String(documentItem.type || ""),
+    uploadedAt: String(documentItem.uploadedAt || ""),
+  };
+}
+
+function documentsSearchText(documents) {
+  return normalizeDocuments(documents)
+    .map((documentItem) => `${documentItem.name} ${documentItem.url}`)
+    .join(" ");
+}
+
+function fileNameFromUrl(value) {
+  try {
+    const url = new URL(value);
+    const name = decodeURIComponent(url.pathname.split("/").filter(Boolean).pop() || "");
+    return name || "";
+  } catch {
+    return "";
+  }
+}
+
+function formatFileSize(size) {
+  if (!size) return "";
+  if (size < 1024) return `${size} B`;
+  if (size < 1024 * 1024) return `${Math.round(size / 1024)} KB`;
+  return `${(size / (1024 * 1024)).toFixed(1)} MB`;
 }
 
 function persist(options = {}) {
@@ -773,37 +912,20 @@ function renderAlarmCell(task, alarmDue) {
 }
 
 function renderDocumentsCell(task) {
-  const documents = parseDocumentLines(task.documents);
+  const documents = normalizeDocuments(task.documents);
   if (!documents.length) return `<div class="document-cell"><span>Belum ada dokumen</span></div>`;
 
   return `
     <div class="document-cell">
-      ${documents.map((documentText, index) => renderDocumentItem(documentText, index)).join("")}
+      ${documents.map((documentItem, index) => renderDocumentItem(documentItem, index)).join("")}
     </div>
   `;
 }
 
-function renderDocumentItem(documentText, index) {
-  if (isHttpUrl(documentText)) {
-    return `<a href="${escapeAttribute(documentText)}" target="_blank" rel="noopener">Dokumen ${index + 1}</a>`;
-  }
-  return `<span>${escapeHtml(documentText)}</span>`;
-}
-
-function parseDocumentLines(value) {
-  return String(value || "")
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter(Boolean);
-}
-
-function isHttpUrl(value) {
-  try {
-    const url = new URL(value);
-    return url.protocol === "http:" || url.protocol === "https:";
-  } catch {
-    return false;
-  }
+function renderDocumentItem(documentItem, index) {
+  const label = documentItem.name || `Dokumen ${index + 1}`;
+  if (!documentItem.url) return `<span>${escapeHtml(label)}</span>`;
+  return `<a href="${escapeAttribute(documentItem.url)}" target="_blank" rel="noopener">${escapeHtml(label)}</a>`;
 }
 
 async function requestAlarmPermission() {
