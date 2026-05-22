@@ -1,6 +1,7 @@
 const STORAGE_KEY = "mandalaTaskSystem.v1";
 const ARCHIVE_KEY = "mandalaTaskArchive.v1";
 const SETTINGS_KEY = "mandalaTaskSettings.v1";
+const HIDDEN_DATES_KEY = "mandalaTaskHiddenDates.v1";
 const CLIENT_ID = `client-${Date.now()}-${Math.random().toString(16).slice(2)}`;
 const progressNoteTimers = new Map();
 
@@ -21,6 +22,7 @@ const state = {
   tasks: loadTasks(),
   focusDate: todayInput(),
   settings: loadSettings(),
+  hiddenDates: loadHiddenDates(),
   serverOnline: false,
   lastServerErrorAt: 0,
   filters: {
@@ -138,6 +140,12 @@ els.printButton.addEventListener("click", () => window.print());
 els.clearDoneButton.addEventListener("click", archiveDoneTasks);
 
 els.taskTableBody.addEventListener("click", (event) => {
+  const groupToggle = event.target.closest("[data-group-toggle]");
+  if (groupToggle) {
+    toggleDateGroup(groupToggle.dataset.date);
+    return;
+  }
+
   const action = event.target.closest("[data-action]");
   if (!action) return;
 
@@ -454,16 +462,19 @@ function renderTable() {
   const tasks = getFilteredTasks();
   const groups = groupTasksByDate(tasks);
   let rowNumber = 0;
+  const hiddenCount = groups.reduce((sum, group) => sum + (state.hiddenDates.has(group.date) ? group.tasks.length : 0), 0);
+  const visibleCount = tasks.length - hiddenCount;
 
   els.taskTableBody.innerHTML = tasks.length
-    ? groups.map((group) => `
-      ${renderDateGroupRow(group)}
-      ${group.tasks.map((task) => renderRow(task, rowNumber++)).join("")}
-    `).join("")
+    ? groups.map((group) => {
+      const hidden = state.hiddenDates.has(group.date);
+      return `
+        ${renderDateGroupRow(group, hidden)}
+        ${hidden ? "" : group.tasks.map((task) => renderRow(task, rowNumber++)).join("")}
+      `;
+    }).join("")
     : `<tr><td class="empty-row" colspan="11">Belum ada tugas yang cocok dengan filter.</td></tr>`;
-  els.tableNote.textContent = tasks.length
-    ? `${tasks.length} tugas dalam ${groups.length} hari ditampilkan.`
-    : "0 tugas ditampilkan.";
+  els.tableNote.textContent = tableNoteText(tasks.length, visibleCount, hiddenCount, groups.length);
 }
 
 function groupTasksByDate(tasks) {
@@ -479,26 +490,56 @@ function groupTasksByDate(tasks) {
   }, []);
 }
 
-function renderDateGroupRow(group) {
+function renderDateGroupRow(group, hidden) {
   const done = group.tasks.filter((task) => task.status === "done").length;
   const active = group.tasks.length - done;
   const overdue = group.tasks.some(isOverdue);
+  const today = group.date === todayInput();
   const meta = [
     `${group.tasks.length} tugas`,
     active ? `${active} aktif` : "",
     done ? `${done} selesai` : "",
+    hidden ? "disembunyikan" : "",
   ].filter(Boolean).join(" - ");
 
   return `
-    <tr class="date-group-row ${overdue ? "date-group-overdue" : ""}">
+    <tr class="date-group-row ${today ? "date-group-today" : ""} ${overdue ? "date-group-overdue" : ""} ${hidden ? "date-group-hidden" : ""}">
       <td colspan="11">
         <div class="date-group-content">
-          <span class="date-group-title">${escapeHtml(dateGroupLabel(group.date))}</span>
-          <span class="date-group-meta">${escapeHtml(meta)}</span>
+          <div class="date-group-main">
+            <span class="date-group-title">${escapeHtml(dateGroupLabel(group.date))}</span>
+            <span class="date-group-meta">${escapeHtml(meta)}</span>
+          </div>
+          <button
+            class="mini-button date-group-toggle"
+            type="button"
+            data-group-toggle
+            data-date="${escapeAttribute(group.date)}"
+            aria-expanded="${hidden ? "false" : "true"}"
+          >${hidden ? "Tampilkan" : "Sembunyikan"}</button>
         </div>
       </td>
     </tr>
   `;
+}
+
+function toggleDateGroup(date) {
+  if (!date) return;
+  if (state.hiddenDates.has(date)) {
+    state.hiddenDates.delete(date);
+    showToast(`${dateGroupLabel(date)} ditampilkan.`);
+  } else {
+    state.hiddenDates.add(date);
+    showToast(`${dateGroupLabel(date)} disembunyikan.`);
+  }
+  saveHiddenDates();
+  renderTable();
+}
+
+function tableNoteText(total, visible, hidden, days) {
+  if (!total) return "0 tugas ditampilkan.";
+  if (hidden) return `${visible} dari ${total} tugas ditampilkan. ${hidden} tugas disembunyikan.`;
+  return `${total} tugas dalam ${days} hari ditampilkan.`;
 }
 
 function renderRow(task, index) {
@@ -558,7 +599,8 @@ function getFilteredTasks() {
     })
     .sort((a, b) => {
       const priorityOrder = { high: 0, medium: 1, low: 2 };
-      if (a.dueDate !== b.dueDate) return a.dueDate.localeCompare(b.dueDate);
+      const dueDateOrder = compareDueDates(a.dueDate, b.dueDate);
+      if (dueDateOrder) return dueDateOrder;
       if (a.status === "done" && b.status !== "done") return 1;
       if (a.status !== "done" && b.status === "done") return -1;
       return (priorityOrder[a.priority] ?? 1) - (priorityOrder[b.priority] ?? 1)
@@ -677,6 +719,19 @@ function loadSettings() {
 
 function saveSettings() {
   localStorage.setItem(SETTINGS_KEY, JSON.stringify(state.settings));
+}
+
+function loadHiddenDates() {
+  try {
+    const dates = JSON.parse(localStorage.getItem(HIDDEN_DATES_KEY) || "[]");
+    return new Set(Array.isArray(dates) ? dates.map(String) : []);
+  } catch {
+    return new Set();
+  }
+}
+
+function saveHiddenDates() {
+  localStorage.setItem(HIDDEN_DATES_KEY, JSON.stringify([...state.hiddenDates]));
 }
 
 function loadArchive() {
@@ -825,6 +880,22 @@ function humanDate(inputDate) {
   if (!inputDate) return "-";
   const date = new Date(`${inputDate}T00:00:00`);
   return new Intl.DateTimeFormat("id-ID", { day: "2-digit", month: "short", year: "numeric" }).format(date);
+}
+
+function compareDueDates(firstDate, secondDate) {
+  const firstRank = dueDateRank(firstDate);
+  const secondRank = dueDateRank(secondDate);
+  if (firstRank !== secondRank) return firstRank - secondRank;
+  if (firstRank === 1) return String(secondDate || "").localeCompare(String(firstDate || ""));
+  return String(firstDate || "").localeCompare(String(secondDate || ""));
+}
+
+function dueDateRank(inputDate) {
+  if (!inputDate) return 3;
+  const today = todayInput();
+  if (inputDate === today) return 0;
+  if (inputDate < today) return 1;
+  return 2;
 }
 
 function dateGroupLabel(inputDate) {
