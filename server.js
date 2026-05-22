@@ -2,13 +2,16 @@ const http = require("node:http");
 const fs = require("node:fs/promises");
 const path = require("node:path");
 const { createReadStream } = require("node:fs");
+const crypto = require("node:crypto");
 
 const PORT = Number(process.env.PORT || 4173);
 const HOST = process.env.HOST || "0.0.0.0";
 const ROOT = __dirname;
 const DATA_DIR = path.join(ROOT, "data");
 const DATA_FILE = path.join(DATA_DIR, "tasks.json");
-const MAX_BODY_SIZE = 5 * 1024 * 1024;
+const UPLOAD_DIR = path.join(DATA_DIR, "uploads");
+const MAX_JSON_BODY_SIZE = 5 * 1024 * 1024;
+const MAX_UPLOAD_BODY_SIZE = 40 * 1024 * 1024;
 
 const clients = new Set();
 
@@ -18,6 +21,15 @@ const contentTypes = {
   ".js": "application/javascript; charset=utf-8",
   ".json": "application/json; charset=utf-8",
   ".svg": "image/svg+xml; charset=utf-8",
+  ".pdf": "application/pdf",
+  ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".webp": "image/webp",
+  ".doc": "application/msword",
+  ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  ".xls": "application/vnd.ms-excel",
+  ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
   ".txt": "text/plain; charset=utf-8",
   ".ico": "image/x-icon",
 };
@@ -31,7 +43,7 @@ const server = http.createServer(async (request, response) => {
     }
 
     if (url.pathname === "/api/tasks" && request.method === "PUT") {
-      const body = await readBody(request);
+      const body = await readBody(request, MAX_JSON_BODY_SIZE);
       const payload = JSON.parse(body || "{}");
       if (!Array.isArray(payload.tasks)) {
         return sendJson(response, { error: "tasks must be an array" }, 400);
@@ -47,8 +59,17 @@ const server = http.createServer(async (request, response) => {
       return sendJson(response, data);
     }
 
+    if (url.pathname === "/api/uploads" && request.method === "POST") {
+      const files = await handleUploads(request);
+      return sendJson(response, { files });
+    }
+
     if (url.pathname === "/api/events" && request.method === "GET") {
       return connectEvents(request, response);
+    }
+
+    if (url.pathname.startsWith("/uploads/") && request.method === "GET") {
+      return serveUpload(url.pathname, response);
     }
 
     return serveStatic(url.pathname, response);
@@ -96,7 +117,7 @@ function normalizeTask(task) {
     priority: ["high", "medium", "low"].includes(task.priority) ? task.priority : "medium",
     status: ["todo", "doing", "review", "done"].includes(task.status) ? task.status : "todo",
     projectNote,
-    documents: String(task.documents || ""),
+    documents: normalizeDocuments(task.documents),
     reminderAt: String(task.reminderAt || ""),
     alarmFiredAt: String(task.alarmFiredAt || ""),
     notes: String(task.notes || ""),
@@ -114,11 +135,111 @@ function normalizeUpdate(update) {
   };
 }
 
+function normalizeDocuments(value) {
+  if (Array.isArray(value)) return value.map(normalizeDocument).filter(Boolean);
+  return String(value || "")
+    .split(/\r?\n/)
+    .map((line, index) => normalizeDocument({ name: `Dokumen ${index + 1}`, url: line.trim() }))
+    .filter(Boolean);
+}
+
+function normalizeDocument(documentItem) {
+  if (!documentItem) return null;
+  if (typeof documentItem === "string") {
+    const text = documentItem.trim();
+    if (!text) return null;
+    return { name: fileNameFromUrl(text) || text, url: text, size: 0, type: "", uploadedAt: "" };
+  }
+  const url = String(documentItem.url || "").trim();
+  const name = String(documentItem.name || fileNameFromUrl(url) || "Dokumen").trim();
+  if (!name && !url) return null;
+  return {
+    name,
+    url,
+    size: Number(documentItem.size || 0),
+    type: String(documentItem.type || ""),
+    uploadedAt: String(documentItem.uploadedAt || ""),
+  };
+}
+
+function fileNameFromUrl(value) {
+  try {
+    const url = new URL(value);
+    const name = decodeURIComponent(url.pathname.split("/").filter(Boolean).pop() || "");
+    return name || "";
+  } catch {
+    return "";
+  }
+}
+
 function legacyProgressNote(value) {
   if (value === undefined || value === null || value === "") return "";
   const number = Number(value);
   if (!Number.isFinite(number)) return String(value);
   return `Catatan lama: progress ${Math.max(0, Math.min(100, number))}%.`;
+}
+
+async function handleUploads(request) {
+  const contentType = request.headers["content-type"] || "";
+  const match = contentType.match(/boundary=(?:"([^"]+)"|([^;]+))/i);
+  if (!match) throw new Error("Missing multipart boundary");
+
+  const boundary = match[1] || match[2];
+  const body = await readBodyBuffer(request, MAX_UPLOAD_BODY_SIZE);
+  const parts = parseMultipart(body, boundary).filter((part) => part.filename && part.content.length);
+  await fs.mkdir(UPLOAD_DIR, { recursive: true });
+
+  const files = [];
+  for (const part of parts) {
+    const originalName = sanitizeFileName(part.filename);
+    const storedName = `${Date.now()}-${crypto.randomBytes(5).toString("hex")}-${originalName}`;
+    const filePath = path.join(UPLOAD_DIR, storedName);
+    await fs.writeFile(filePath, part.content);
+    files.push({
+      name: originalName,
+      url: `/uploads/${encodeURIComponent(storedName)}`,
+      size: part.content.length,
+      type: part.contentType || "application/octet-stream",
+      uploadedAt: new Date().toISOString(),
+    });
+  }
+
+  return files;
+}
+
+function parseMultipart(buffer, boundary) {
+  const boundaryText = `--${boundary}`;
+  return buffer.toString("binary")
+    .split(boundaryText)
+    .slice(1, -1)
+    .map(parseMultipartPart)
+    .filter(Boolean);
+}
+
+function parseMultipartPart(part) {
+  let text = part;
+  if (text.startsWith("\r\n")) text = text.slice(2);
+  if (text.endsWith("\r\n")) text = text.slice(0, -2);
+  const headerEnd = text.indexOf("\r\n\r\n");
+  if (headerEnd === -1) return null;
+
+  const headers = text.slice(0, headerEnd);
+  const content = Buffer.from(text.slice(headerEnd + 4), "binary");
+  const disposition = headers.match(/content-disposition:\s*([^\r\n]+)/i)?.[1] || "";
+  const filename = disposition.match(/filename="([^"]*)"/i)?.[1] || "";
+  const fieldName = disposition.match(/name="([^"]*)"/i)?.[1] || "";
+  const contentType = headers.match(/content-type:\s*([^\r\n]+)/i)?.[1] || "";
+  return { fieldName, filename, contentType, content };
+}
+
+function sanitizeFileName(fileName) {
+  const safe = path.basename(String(fileName || "dokumen"))
+    .normalize("NFKD")
+    .replace(/[^\w.\- ]+/g, "")
+    .replace(/\s+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 120);
+  return safe || "dokumen";
 }
 
 function connectEvents(request, response) {
@@ -165,13 +286,13 @@ function sendJson(response, payload, status = 200) {
   response.end(JSON.stringify(payload));
 }
 
-function readBody(request) {
+function readBody(request, maxSize = MAX_JSON_BODY_SIZE) {
   return new Promise((resolve, reject) => {
     let body = "";
     request.setEncoding("utf8");
     request.on("data", (chunk) => {
       body += chunk;
-      if (body.length > MAX_BODY_SIZE) {
+      if (body.length > maxSize) {
         reject(new Error("Request body too large"));
         request.destroy();
       }
@@ -179,6 +300,58 @@ function readBody(request) {
     request.on("end", () => resolve(body));
     request.on("error", reject);
   });
+}
+
+function readBodyBuffer(request, maxSize) {
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    let size = 0;
+    request.on("data", (chunk) => {
+      size += chunk.length;
+      if (size > maxSize) {
+        reject(new Error("Request body too large"));
+        request.destroy();
+        return;
+      }
+      chunks.push(chunk);
+    });
+    request.on("end", () => resolve(Buffer.concat(chunks)));
+    request.on("error", reject);
+  });
+}
+
+async function serveUpload(urlPath, response) {
+  const fileName = path.basename(decodeURIComponent(urlPath));
+  const filePath = path.normalize(path.join(UPLOAD_DIR, fileName));
+
+  if (!filePath.startsWith(UPLOAD_DIR)) {
+    response.writeHead(403);
+    response.end("Forbidden");
+    return;
+  }
+
+  try {
+    const stat = await fs.stat(filePath);
+    if (!stat.isFile()) {
+      response.writeHead(404);
+      response.end("Not found");
+      return;
+    }
+
+    response.writeHead(200, {
+      "Content-Type": contentTypes[path.extname(filePath).toLowerCase()] || "application/octet-stream",
+      "Content-Length": stat.size,
+      "Cache-Control": "public, max-age=31536000, immutable",
+    });
+    createReadStream(filePath).pipe(response);
+  } catch (error) {
+    if (error.code === "ENOENT") {
+      response.writeHead(404);
+      response.end("Not found");
+      return;
+    }
+    throw error;
+  }
 }
 
 async function serveStatic(urlPath, response) {
