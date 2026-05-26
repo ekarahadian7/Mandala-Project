@@ -3,7 +3,8 @@ const ARCHIVE_KEY = "mandalaTaskArchive.v1";
 const SETTINGS_KEY = "mandalaTaskSettings.v1";
 const HIDDEN_DATES_KEY = "mandalaTaskHiddenDates.v1";
 const CLIENT_ID = `client-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-const UPLOAD_CHUNK_SIZE = 4 * 1024 * 1024;
+const UPLOAD_CHUNK_SIZE = 768 * 1024;
+const UPLOAD_RETRY_LIMIT = 3;
 const projectNoteTimers = new Map();
 
 const statuses = [
@@ -427,8 +428,8 @@ async function handleDocumentFiles(fileList) {
     state.formDocuments = [...state.formDocuments, ...uploaded.map(normalizeDocument).filter(Boolean)];
     renderFormDocuments();
     showToast(`${uploaded.length} dokumen diupload.`);
-  } catch {
-    showToast("Upload gagal. Coba ulangi atau gunakan file yang lebih kecil.");
+  } catch (error) {
+    showToast(error.message || "Upload gagal. Coba ulangi atau gunakan file yang lebih kecil.");
   } finally {
     setDocumentDropZoneBusy(false);
   }
@@ -454,27 +455,65 @@ async function uploadSingleDocument(file) {
     const percent = Math.round(((index + 1) / totalChunks) * 100);
     setDocumentDropZoneBusy(true, `Mengupload ${file.name || "dokumen"} ${percent}%`);
 
-    const response = await fetch("/api/uploads/chunk", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/octet-stream",
-        "X-Upload-Id": uploadId,
-        "X-File-Name": encodeURIComponent(file.name || "dokumen"),
-        "X-File-Type": encodeURIComponent(file.type || "application/octet-stream"),
-        "X-File-Size": String(file.size || 0),
-        "X-Chunk-Index": String(index),
-        "X-Total-Chunks": String(totalChunks),
-      },
-      body: chunk,
+    const data = await uploadDocumentChunk({
+      file,
+      uploadId,
+      chunk,
+      chunkIndex: index,
+      totalChunks,
     });
 
-    if (!response.ok) throw new Error("Upload failed");
-    const data = await response.json();
     if (data.complete) uploadedFile = data.file;
   }
 
-  if (!uploadedFile) throw new Error("Upload did not finish");
+  if (!uploadedFile) throw new Error("Upload belum selesai. Coba ulangi lagi.");
   return uploadedFile;
+}
+
+async function uploadDocumentChunk({ file, uploadId, chunk, chunkIndex, totalChunks }) {
+  let lastError = null;
+  for (let attempt = 1; attempt <= UPLOAD_RETRY_LIMIT; attempt += 1) {
+    try {
+      const response = await fetch("/api/uploads/chunk", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/octet-stream",
+          "X-Upload-Id": uploadId,
+          "X-File-Name": encodeURIComponent(file.name || "dokumen"),
+          "X-File-Type": encodeURIComponent(file.type || "application/octet-stream"),
+          "X-File-Size": String(file.size || 0),
+          "X-Chunk-Index": String(chunkIndex),
+          "X-Total-Chunks": String(totalChunks),
+        },
+        body: chunk,
+      });
+
+      if (!response.ok) throw new Error(await uploadErrorMessage(response));
+      return response.json();
+    } catch (error) {
+      lastError = error;
+      if (attempt === UPLOAD_RETRY_LIMIT) break;
+      await wait(800 * attempt);
+    }
+  }
+
+  throw new Error(lastError?.message || "Upload gagal. Coba ulangi lagi.");
+}
+
+async function uploadErrorMessage(response) {
+  try {
+    const data = await response.json();
+    if (data.error) return data.error;
+  } catch {
+    // Use the fallback message below.
+  }
+  return response.status === 413
+    ? "File terlalu besar untuk storage website."
+    : "Upload terputus. Coba ulangi lagi.";
+}
+
+function wait(ms) {
+  return new Promise((resolve) => window.setTimeout(resolve, ms));
 }
 
 function setDocumentDropZoneBusy(isBusy, label = "Mengupload dokumen...") {
