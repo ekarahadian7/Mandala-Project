@@ -13,10 +13,17 @@ const UPLOAD_DIR = path.join(DATA_DIR, "uploads");
 const UPLOAD_CHUNK_DIR = path.join(DATA_DIR, "upload-chunks");
 const MAX_JSON_BODY_SIZE = 5 * 1024 * 1024;
 const MAX_UPLOAD_BODY_SIZE = 40 * 1024 * 1024;
-const MAX_UPLOAD_CHUNK_SIZE = 6 * 1024 * 1024;
-const MAX_UPLOAD_FILE_SIZE = 1024 * 1024 * 1024;
+const MAX_UPLOAD_CHUNK_SIZE = 2 * 1024 * 1024;
+const MAX_UPLOAD_FILE_SIZE = 5 * 1024 * 1024 * 1024;
 
 const clients = new Set();
+
+class HttpError extends Error {
+  constructor(statusCode, message) {
+    super(message);
+    this.statusCode = statusCode;
+  }
+}
 
 const contentTypes = {
   ".html": "text/html; charset=utf-8",
@@ -82,8 +89,9 @@ const server = http.createServer(async (request, response) => {
 
     return serveStatic(url.pathname, response);
   } catch (error) {
-    console.error(error);
-    return sendJson(response, { error: "Server error" }, 500);
+    const status = error.statusCode || 500;
+    if (status >= 500) console.error(error);
+    return sendJson(response, { error: status >= 500 ? "Server error" : error.message }, status);
   }
 });
 
@@ -224,12 +232,15 @@ async function handleUploadChunk(request) {
   const totalChunks = toSafeInteger(request.headers["x-total-chunks"], 0);
 
   if (!uploadId || chunkIndex < 0 || totalChunks < 1 || chunkIndex >= totalChunks) {
-    throw new Error("Invalid upload chunk metadata");
+    throw new HttpError(400, "Data upload tidak lengkap. Coba ulangi upload.");
   }
 
   if (fileSize > MAX_UPLOAD_FILE_SIZE || totalChunks > 10000) {
-    throw new Error("Upload file too large");
+    throw new HttpError(413, "File terlalu besar untuk storage website. Coba kompres atau pecah file.");
   }
+
+  const completedUpload = await readCompletedUpload(uploadId);
+  if (completedUpload) return completedUpload;
 
   const body = await readBodyBuffer(request, MAX_UPLOAD_CHUNK_SIZE);
   const chunkDir = path.join(UPLOAD_CHUNK_DIR, uploadId);
@@ -239,13 +250,15 @@ async function handleUploadChunk(request) {
   const complete = await uploadChunksComplete(chunkDir, totalChunks);
   if (!complete) return null;
 
-  return assembleUploadChunks({
+  const file = await assembleUploadChunks({
     chunkDir,
     totalChunks,
     originalName,
     fileType,
     fileSize,
   });
+  await writeCompletedUpload(uploadId, file);
+  return file;
 }
 
 async function uploadChunksComplete(chunkDir, totalChunks) {
@@ -287,6 +300,22 @@ async function assembleUploadChunks({ chunkDir, totalChunks, originalName, fileT
     type: fileType,
     uploadedAt: new Date().toISOString(),
   };
+}
+
+async function readCompletedUpload(uploadId) {
+  try {
+    const raw = await fs.readFile(path.join(UPLOAD_CHUNK_DIR, `${uploadId}.json`), "utf8");
+    const file = JSON.parse(raw);
+    return file && file.url ? file : null;
+  } catch (error) {
+    if (error.code === "ENOENT") return null;
+    throw error;
+  }
+}
+
+async function writeCompletedUpload(uploadId, file) {
+  await fs.mkdir(UPLOAD_CHUNK_DIR, { recursive: true });
+  await fs.writeFile(path.join(UPLOAD_CHUNK_DIR, `${uploadId}.json`), JSON.stringify(file));
 }
 
 function parseMultipart(buffer, boundary) {
@@ -395,7 +424,7 @@ function readBody(request, maxSize = MAX_JSON_BODY_SIZE) {
     request.on("data", (chunk) => {
       body += chunk;
       if (body.length > maxSize) {
-        reject(new Error("Request body too large"));
+        reject(new HttpError(413, "Data terlalu besar."));
         request.destroy();
       }
     });
@@ -411,7 +440,7 @@ function readBodyBuffer(request, maxSize) {
     request.on("data", (chunk) => {
       size += chunk.length;
       if (size > maxSize) {
-        reject(new Error("Request body too large"));
+        reject(new HttpError(413, "Potongan upload terlalu besar. Coba ulangi upload."));
         request.destroy();
         return;
       }
