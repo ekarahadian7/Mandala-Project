@@ -6,6 +6,7 @@ const CLIENT_ID = `client-${Date.now()}-${Math.random().toString(16).slice(2)}`;
 const UPLOAD_CHUNK_SIZE = 768 * 1024;
 const UPLOAD_RETRY_LIMIT = 3;
 const DIRECT_UPLOAD_LIMIT = 20 * 1024 * 1024;
+const MAX_DAILY_REMINDER_DAYS = 2000;
 const projectNoteTimers = new Map();
 
 const statuses = [
@@ -665,31 +666,49 @@ function renderTable() {
   const groups = groupTasksByDate(tasks);
   let rowNumber = 0;
   const hiddenCount = groups.reduce((sum, group) => sum + (state.hiddenDates.has(group.date) ? group.tasks.length : 0), 0);
-  const visibleCount = tasks.length - hiddenCount;
+  const reminderCount = groups.reduce((sum, group) => sum + group.tasks.length, 0);
+  const visibleCount = reminderCount - hiddenCount;
 
-  els.taskTableBody.innerHTML = tasks.length
+  els.taskTableBody.innerHTML = groups.length
     ? groups.map((group) => {
       const hidden = state.hiddenDates.has(group.date);
       return `
         ${renderDateGroupRow(group, hidden)}
-        ${hidden ? "" : group.tasks.map((task) => renderRow(task, rowNumber++)).join("")}
+        ${hidden ? "" : group.tasks.map((task) => renderRow(task, rowNumber++, group.date)).join("")}
       `;
     }).join("")
     : `<tr><td class="empty-row" colspan="11">Belum ada tugas yang cocok dengan filter.</td></tr>`;
-  els.tableNote.textContent = tableNoteText(tasks.length, visibleCount, hiddenCount, groups.length);
+  els.tableNote.textContent = tableNoteText(reminderCount, visibleCount, hiddenCount, groups.length);
 }
 
 function groupTasksByDate(tasks) {
-  return tasks.reduce((groups, task) => {
-    const date = task.dueDate || "Tanpa deadline";
-    const group = groups.find((item) => item.date === date);
-    if (group) {
-      group.tasks.push(task);
-    } else {
-      groups.push({ date, tasks: [task] });
-    }
-    return groups;
-  }, []);
+  const groups = new Map();
+  tasks.forEach((task) => {
+    taskReminderDates(task).forEach((date) => {
+      if (!groups.has(date)) groups.set(date, []);
+      groups.get(date).push(task);
+    });
+  });
+
+  return [...groups.entries()]
+    .map(([date, groupTasks]) => ({ date, tasks: groupTasks }))
+    .sort((first, second) => compareDueDates(first.date, second.date));
+}
+
+function taskReminderDates(task) {
+  const dueDate = task.dueDate || todayInput();
+  let startDate = task.startDate || dueDate;
+  if (startDate > dueDate) startDate = dueDate;
+
+  const dates = [];
+  let currentDate = startDate;
+  for (let count = 0; currentDate <= dueDate && count < MAX_DAILY_REMINDER_DAYS; count += 1) {
+    dates.push(currentDate);
+    currentDate = addDays(currentDate, 1);
+  }
+
+  if (!dates.length || dates[dates.length - 1] !== dueDate) dates.push(dueDate);
+  return dates;
 }
 
 function renderDateGroupRow(group, hidden) {
@@ -739,15 +758,15 @@ function toggleDateGroup(date) {
 }
 
 function tableNoteText(total, visible, hidden, days) {
-  if (!total) return "0 tugas ditampilkan.";
-  if (hidden) return `${visible} dari ${total} tugas ditampilkan. ${hidden} tugas disembunyikan.`;
-  return `${total} tugas dalam ${days} hari ditampilkan.`;
+  if (!total) return "0 pengingat tugas ditampilkan.";
+  if (hidden) return `${visible} dari ${total} pengingat tugas ditampilkan. ${hidden} disembunyikan.`;
+  return `${total} pengingat tugas dalam ${days} hari ditampilkan.`;
 }
 
-function renderRow(task, index) {
+function renderRow(task, index, groupDate) {
   const overdue = isOverdue(task);
   const alarmDue = isAlarmDue(task);
-  const isToday = task.dueDate === todayInput();
+  const isToday = groupDate === todayInput();
   const rowClass = [
     isToday ? "today-task" : "",
     overdue ? "overdue" : "",
@@ -872,7 +891,8 @@ function importData(event) {
 function normalizeTask(task) {
   const projectNote = String(task.projectNote || task.progressNote || legacyProgressNote(task.progress) || "");
   const dueDate = task.dueDate || todayInput();
-  const startDate = task.startDate || inputDateFromIso(task.createdAt) || dueDate;
+  const rawStartDate = task.startDate || inputDateFromIso(task.createdAt) || dueDate;
+  const startDate = rawStartDate > dueDate ? dueDate : rawStartDate;
   return {
     id: task.id || createId(),
     title: task.title || "Tugas tanpa judul",
