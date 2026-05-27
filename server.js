@@ -7,7 +7,8 @@ const crypto = require("node:crypto");
 const PORT = Number(process.env.PORT || 4173);
 const HOST = process.env.HOST || "0.0.0.0";
 const ROOT = __dirname;
-const DATA_DIR = path.join(ROOT, "data");
+const STARTED_AT = new Date().toISOString();
+const DATA_DIR = path.resolve(process.env.DATA_DIR || process.env.RAILWAY_VOLUME_MOUNT_PATH || path.join(ROOT, "data"));
 const DATA_FILE = path.join(DATA_DIR, "tasks.json");
 const UPLOAD_DIR = path.join(DATA_DIR, "uploads");
 const UPLOAD_CHUNK_DIR = path.join(DATA_DIR, "upload-chunks");
@@ -47,6 +48,15 @@ const contentTypes = {
 const server = http.createServer(async (request, response) => {
   try {
     const url = new URL(request.url, `http://${request.headers.host}`);
+
+    if (url.pathname === "/api/health" && request.method === "GET") {
+      return sendJson(response, {
+        ok: true,
+        app: "Mandala Tabel Tugas",
+        startedAt: STARTED_AT,
+        storage: process.env.RAILWAY_VOLUME_MOUNT_PATH ? "railway-volume" : "local",
+      });
+    }
 
     if (url.pathname === "/api/tasks" && request.method === "GET") {
       return sendJson(response, await readData());
@@ -98,6 +108,11 @@ const server = http.createServer(async (request, response) => {
 server.listen(PORT, HOST, () => {
   const shownHost = HOST === "0.0.0.0" ? "127.0.0.1" : HOST;
   console.log(`Mandala Task real-time server running at http://${shownHost}:${PORT}`);
+  console.log(`Data folder: ${DATA_DIR}`);
+});
+
+process.on("SIGTERM", () => {
+  server.close(() => process.exit(0));
 });
 
 async function readData() {
@@ -115,21 +130,21 @@ async function readData() {
 }
 
 async function writeData(data) {
-  await fs.mkdir(DATA_DIR, { recursive: true });
-  const tmpFile = `${DATA_FILE}.tmp`;
-  await fs.writeFile(tmpFile, JSON.stringify(data, null, 2));
-  await fs.rename(tmpFile, DATA_FILE);
+  await writeTextAtomic(DATA_FILE, JSON.stringify(data, null, 2));
 }
 
 function normalizeTask(task) {
   const now = new Date().toISOString();
   const projectNote = String(task.projectNote || task.progressNote || legacyProgressNote(task.progress) || "");
+  const dueDate = String(task.dueDate || new Date().toISOString().slice(0, 10));
+  const startDate = String(task.startDate || inputDateFromIso(task.createdAt) || dueDate);
   return {
     id: String(task.id || `task-${Date.now()}-${Math.random().toString(16).slice(2)}`),
     title: String(task.title || "Tugas tanpa judul"),
     project: String(task.project || "Project Umum"),
     assignee: String(task.assignee || "Belum ditentukan"),
-    dueDate: String(task.dueDate || new Date().toISOString().slice(0, 10)),
+    startDate,
+    dueDate,
     priority: ["high", "medium", "low"].includes(task.priority) ? task.priority : "medium",
     status: ["todo", "doing", "review", "done"].includes(task.status) ? task.status : "todo",
     projectNote,
@@ -141,6 +156,14 @@ function normalizeTask(task) {
     createdAt: String(task.createdAt || now),
     updatedAt: String(task.updatedAt || now),
   };
+}
+
+function inputDateFromIso(value) {
+  if (!value) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  date.setMinutes(date.getMinutes() - date.getTimezoneOffset());
+  return date.toISOString().slice(0, 10);
 }
 
 function normalizeUpdate(update) {
@@ -245,7 +268,7 @@ async function handleUploadChunk(request) {
   const body = await readBodyBuffer(request, MAX_UPLOAD_CHUNK_SIZE);
   const chunkDir = path.join(UPLOAD_CHUNK_DIR, uploadId);
   await fs.mkdir(chunkDir, { recursive: true });
-  await fs.writeFile(path.join(chunkDir, `${chunkIndex}.part`), body);
+  await writeBufferAtomic(path.join(chunkDir, `${chunkIndex}.part`), body);
 
   const complete = await uploadChunksComplete(chunkDir, totalChunks);
   if (!complete) return null;
@@ -291,6 +314,11 @@ async function assembleUploadChunks({ chunkDir, totalChunks, originalName, fileT
     await fileHandle.close();
   }
 
+  if (fileSize && totalSize !== fileSize) {
+    await fs.rm(filePath, { force: true });
+    throw new HttpError(400, "Ukuran file tidak cocok. Upload dibatalkan, coba ulangi lagi.");
+  }
+
   await fs.rm(chunkDir, { recursive: true, force: true });
 
   return {
@@ -315,7 +343,21 @@ async function readCompletedUpload(uploadId) {
 
 async function writeCompletedUpload(uploadId, file) {
   await fs.mkdir(UPLOAD_CHUNK_DIR, { recursive: true });
-  await fs.writeFile(path.join(UPLOAD_CHUNK_DIR, `${uploadId}.json`), JSON.stringify(file));
+  await writeTextAtomic(path.join(UPLOAD_CHUNK_DIR, `${uploadId}.json`), JSON.stringify(file));
+}
+
+async function writeBufferAtomic(filePath, buffer) {
+  await fs.mkdir(path.dirname(filePath), { recursive: true });
+  const tmpFile = `${filePath}.${process.pid}.${crypto.randomBytes(4).toString("hex")}.tmp`;
+  await fs.writeFile(tmpFile, buffer);
+  await fs.rename(tmpFile, filePath);
+}
+
+async function writeTextAtomic(filePath, text) {
+  await fs.mkdir(path.dirname(filePath), { recursive: true });
+  const tmpFile = `${filePath}.${process.pid}.${crypto.randomBytes(4).toString("hex")}.tmp`;
+  await fs.writeFile(tmpFile, text);
+  await fs.rename(tmpFile, filePath);
 }
 
 function parseMultipart(buffer, boundary) {
@@ -455,7 +497,7 @@ async function serveUpload(urlPath, response) {
   const fileName = path.basename(decodeURIComponent(urlPath));
   const filePath = path.normalize(path.join(UPLOAD_DIR, fileName));
 
-  if (!filePath.startsWith(UPLOAD_DIR)) {
+  if (!isPathInside(filePath, UPLOAD_DIR)) {
     response.writeHead(403);
     response.end("Forbidden");
     return;
@@ -490,7 +532,7 @@ async function serveStatic(urlPath, response) {
   const relativePath = pathname === "/" ? "index.html" : pathname.replace(/^\/+/, "");
   const filePath = path.normalize(path.join(ROOT, relativePath));
 
-  if (!filePath.startsWith(ROOT)) {
+  if (!isPathInside(filePath, ROOT)) {
     response.writeHead(403);
     response.end("Forbidden");
     return;
@@ -509,4 +551,9 @@ async function serveStatic(urlPath, response) {
     if (error.code === "ENOENT") return serveStatic("/index.html", response);
     throw error;
   }
+}
+
+function isPathInside(targetPath, parentPath) {
+  const relative = path.relative(parentPath, targetPath);
+  return relative === "" || (!!relative && !relative.startsWith("..") && !path.isAbsolute(relative));
 }
