@@ -59,6 +59,9 @@ const els = {
   taskReminderAt: document.querySelector("#taskReminderAt"),
   taskDocumentsInput: document.querySelector("#taskDocumentsInput"),
   documentDropZone: document.querySelector("#documentDropZone"),
+  driveStorageStatus: document.querySelector("#driveStorageStatus"),
+  driveLinkInput: document.querySelector("#driveLinkInput"),
+  addDriveLinkButton: document.querySelector("#addDriveLinkButton"),
   documentList: document.querySelector("#documentList"),
   taskNotes: document.querySelector("#taskNotes"),
   formTitle: document.querySelector("#formTitle"),
@@ -92,6 +95,7 @@ if ("serviceWorker" in navigator) {
 
 connectRealtime();
 loadRemoteTasks();
+loadStorageStatus();
 
 els.focusDate.value = state.focusDate;
 els.taskStartDate.value = state.focusDate;
@@ -159,6 +163,13 @@ els.taskDocumentsInput.addEventListener("change", () => {
   handleDocumentFiles(els.taskDocumentsInput.files);
   els.taskDocumentsInput.value = "";
 });
+els.addDriveLinkButton.addEventListener("click", addDriveLinkFromInput);
+els.driveLinkInput.addEventListener("keydown", (event) => {
+  if (event.key === "Enter") {
+    event.preventDefault();
+    addDriveLinkFromInput();
+  }
+});
 els.documentList.addEventListener("click", (event) => {
   const removeButton = event.target.closest("[data-document-remove]");
   if (!removeButton) return;
@@ -224,6 +235,27 @@ async function loadRemoteTasks() {
   } catch {
     state.serverOnline = false;
   }
+}
+
+async function loadStorageStatus() {
+  try {
+    const response = await fetch("/api/storage", { cache: "no-store" });
+    if (!response.ok) throw new Error("Storage status unavailable");
+    updateStorageStatus(await response.json());
+  } catch {
+    updateStorageStatus({ driveEnabled: false });
+  }
+}
+
+function updateStorageStatus(status) {
+  const driveEnabled = Boolean(status && status.driveEnabled);
+  els.driveStorageStatus.textContent = driveEnabled
+    ? "Google Drive otomatis aktif. File drag & drop akan disimpan ke Drive."
+    : "Google Drive otomatis belum aktif. Gunakan Link Drive untuk file besar.";
+  els.driveStorageStatus.classList.toggle("drive-enabled", driveEnabled);
+  els.documentDropZone.querySelector("span").textContent = driveEnabled
+    ? "file akan dikirim ke Google Drive"
+    : "atau klik untuk pilih file dari komputer";
 }
 
 function connectRealtime() {
@@ -450,6 +482,33 @@ async function handleDocumentFiles(fileList) {
   }
 }
 
+function addDriveLinkFromInput() {
+  const url = els.driveLinkInput.value.trim();
+  if (!url) {
+    showToast("Tempel link Google Drive dulu.");
+    return;
+  }
+  if (!/^https?:\/\//i.test(url)) {
+    showToast("Link Drive harus diawali http atau https.");
+    return;
+  }
+
+  const documentItem = normalizeDocument({
+    name: driveDocumentName(url),
+    url,
+    size: 0,
+    type: "link",
+    storage: "google-drive",
+    uploadedAt: new Date().toISOString(),
+  });
+  if (!documentItem) return;
+
+  state.formDocuments = [...state.formDocuments, documentItem];
+  els.driveLinkInput.value = "";
+  renderFormDocuments();
+  showToast("Link Google Drive ditambahkan.");
+}
+
 async function uploadDocuments(files) {
   const uploaded = [];
   for (const file of files) {
@@ -573,7 +632,7 @@ function renderFormDocuments() {
     ? documents.map((documentItem, index) => `
       <div class="document-item">
         <a href="${escapeAttribute(documentItem.url)}" target="_blank" rel="noopener">${escapeHtml(documentItem.name)}</a>
-        <span>${formatFileSize(documentItem.size)}</span>
+        <span>${escapeHtml(documentMetaText(documentItem))}</span>
         <button class="mini-button" type="button" data-document-remove="${index}">Hapus</button>
       </div>
     `).join("")
@@ -934,7 +993,7 @@ function normalizeDocument(documentItem) {
   if (typeof documentItem === "string") {
     const text = documentItem.trim();
     if (!text) return null;
-    return { name: fileNameFromUrl(text) || text, url: text, size: 0, type: "", uploadedAt: "" };
+    return { name: fileNameFromUrl(text) || text, url: text, size: 0, type: "", storage: documentStorageFromUrl(text), uploadedAt: "" };
   }
   const url = String(documentItem.url || "").trim();
   const name = String(documentItem.name || fileNameFromUrl(url) || "Dokumen").trim();
@@ -944,6 +1003,7 @@ function normalizeDocument(documentItem) {
     url,
     size: Number(documentItem.size || 0),
     type: String(documentItem.type || ""),
+    storage: String(documentItem.storage || documentStorageFromUrl(url)),
     uploadedAt: String(documentItem.uploadedAt || ""),
   };
 }
@@ -962,6 +1022,29 @@ function fileNameFromUrl(value) {
   } catch {
     return "";
   }
+}
+
+function driveDocumentName(url) {
+  return documentStorageFromUrl(url) === "google-drive"
+    ? "Dokumen Google Drive"
+    : fileNameFromUrl(url) || "Dokumen Link";
+}
+
+function documentStorageFromUrl(url) {
+  try {
+    const host = new URL(url).hostname.toLowerCase();
+    return host.includes("drive.google.com") || host.includes("docs.google.com") ? "google-drive" : "link";
+  } catch {
+    return "";
+  }
+}
+
+function documentMetaText(documentItem) {
+  const parts = [];
+  if (documentItem.storage === "google-drive") parts.push("Google Drive");
+  else if (documentItem.storage === "link") parts.push("Link");
+  if (documentItem.size) parts.push(formatFileSize(documentItem.size));
+  return parts.join(" - ");
 }
 
 function formatFileSize(size) {
@@ -1074,7 +1157,8 @@ function renderDocumentsCell(task) {
 function renderDocumentItem(documentItem, index) {
   const label = documentItem.name || `Dokumen ${index + 1}`;
   if (!documentItem.url) return `<span>${escapeHtml(label)}</span>`;
-  return `<a href="${escapeAttribute(documentItem.url)}" target="_blank" rel="noopener">${escapeHtml(label)}</a>`;
+  const badge = documentItem.storage === "google-drive" ? `<span class="document-badge">Drive</span>` : "";
+  return `<span class="document-link-row"><a href="${escapeAttribute(documentItem.url)}" target="_blank" rel="noopener">${escapeHtml(label)}</a>${badge}</span>`;
 }
 
 async function requestAlarmPermission() {
