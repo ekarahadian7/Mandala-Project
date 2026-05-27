@@ -137,7 +137,8 @@ function normalizeTask(task) {
   const now = new Date().toISOString();
   const projectNote = String(task.projectNote || task.progressNote || legacyProgressNote(task.progress) || "");
   const dueDate = String(task.dueDate || new Date().toISOString().slice(0, 10));
-  const startDate = String(task.startDate || inputDateFromIso(task.createdAt) || dueDate);
+  const rawStartDate = String(task.startDate || inputDateFromIso(task.createdAt) || dueDate);
+  const startDate = rawStartDate > dueDate ? dueDate : rawStartDate;
   return {
     id: String(task.id || `task-${Date.now()}-${Math.random().toString(16).slice(2)}`),
     title: String(task.title || "Tugas tanpa judul"),
