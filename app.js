@@ -5,6 +5,7 @@ const HIDDEN_DATES_KEY = "mandalaTaskHiddenDates.v1";
 const CLIENT_ID = `client-${Date.now()}-${Math.random().toString(16).slice(2)}`;
 const UPLOAD_CHUNK_SIZE = 768 * 1024;
 const UPLOAD_RETRY_LIMIT = 3;
+const DIRECT_UPLOAD_LIMIT = 20 * 1024 * 1024;
 const projectNoteTimers = new Map();
 
 const statuses = [
@@ -444,6 +445,34 @@ async function uploadDocuments(files) {
 }
 
 async function uploadSingleDocument(file) {
+  if (file.size <= DIRECT_UPLOAD_LIMIT) {
+    try {
+      return await uploadSingleDocumentDirect(file);
+    } catch {
+      // Fall back to chunk upload when the simple upload path is interrupted.
+    }
+  }
+
+  return uploadSingleDocumentChunked(file);
+}
+
+async function uploadSingleDocumentDirect(file) {
+  setDocumentDropZoneBusy(true, `Mengupload ${file.name || "dokumen"}...`);
+  const payload = new FormData();
+  payload.append("documents", file);
+  const response = await fetch("/api/uploads", {
+    method: "POST",
+    body: payload,
+  });
+
+  if (!response.ok) throw new Error(await uploadErrorMessage(response));
+  const data = await response.json();
+  const uploadedFile = Array.isArray(data.files) ? data.files[0] : null;
+  if (!uploadedFile) throw new Error("Upload belum selesai. Coba ulangi lagi.");
+  return uploadedFile;
+}
+
+async function uploadSingleDocumentChunked(file) {
   const uploadId = createId();
   const totalChunks = Math.max(1, Math.ceil(file.size / UPLOAD_CHUNK_SIZE));
   let uploadedFile = null;
@@ -518,6 +547,8 @@ function wait(ms) {
 
 function setDocumentDropZoneBusy(isBusy, label = "Mengupload dokumen...") {
   els.documentDropZone.classList.toggle("is-uploading", isBusy);
+  els.documentDropZone.setAttribute("aria-busy", String(isBusy));
+  els.taskDocumentsInput.disabled = isBusy;
   els.documentDropZone.querySelector("strong").textContent = isBusy ? label : "Drag & drop file di sini";
 }
 
