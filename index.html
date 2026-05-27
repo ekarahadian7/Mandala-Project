@@ -97,16 +97,23 @@
             <input id="alarmSoundToggle" type="checkbox" checked>
             Bunyi alarm
           </label>
-          <label class="wide">
-            Dokumen tugas
+          <div class="wide field-group">
+            <span class="field-label">Dokumen tugas</span>
             <input id="taskDocumentsInput" class="file-input" type="file" multiple>
             <div class="drop-zone" id="documentDropZone" role="button" tabindex="0">
               <strong>Drag & drop file di sini</strong>
               <span>atau klik untuk pilih file dari komputer</span>
             </div>
+            <div class="drive-tools">
+              <div class="drive-status" id="driveStorageStatus">Mengecek Google Drive...</div>
+              <div class="drive-link-row">
+                <input id="driveLinkInput" type="url" placeholder="Tempel link dokumen Google Drive">
+                <button class="secondary-button" id="addDriveLinkButton" type="button">Tambah Link Drive</button>
+              </div>
+            </div>
             <div class="document-list" id="documentList"></div>
-            <span class="field-hint">File yang diupload akan muncul di tabel dan bisa dibuka staf.</span>
-          </label>
+            <span class="field-hint">Untuk file besar, upload ke Google Drive lalu tempel linknya di sini. Jika Drive otomatis aktif, drag & drop akan tersimpan ke Drive.</span>
+          </div>
           <label class="wide">
             Catatan detail
             <textarea id="taskNotes" rows="2" placeholder="Brief, link dokumen, kendala, atau instruksi tambahan"></textarea>
