@@ -50,6 +50,7 @@ const els = {
   taskTitle: document.querySelector("#taskTitle"),
   taskProject: document.querySelector("#taskProject"),
   taskAssignee: document.querySelector("#taskAssignee"),
+  taskStartDate: document.querySelector("#taskStartDate"),
   taskDueDate: document.querySelector("#taskDueDate"),
   taskPriority: document.querySelector("#taskPriority"),
   taskStatus: document.querySelector("#taskStatus"),
@@ -92,6 +93,7 @@ connectRealtime();
 loadRemoteTasks();
 
 els.focusDate.value = state.focusDate;
+els.taskStartDate.value = state.focusDate;
 els.taskDueDate.value = state.focusDate;
 els.alarmSoundToggle.checked = state.settings.soundEnabled;
 updateAlarmButton();
@@ -275,6 +277,7 @@ function sampleTask(title, project, assignee, dueDate, priority, status, project
     title,
     project,
     assignee,
+    startDate: dueDate,
     dueDate,
     priority,
     status,
@@ -297,6 +300,13 @@ function saveTaskFromForm() {
   const status = els.taskStatus.value;
   const updates = existing ? [...(existing.updates || [])] : [];
   const reminderAt = els.taskReminderAt.value;
+  const startDate = els.taskStartDate.value || state.focusDate;
+  const dueDate = els.taskDueDate.value;
+
+  if (startDate && dueDate && startDate > dueDate) {
+    showToast("Tanggal mulai tidak boleh setelah deadline.");
+    return;
+  }
 
   if (!existing || JSON.stringify(documents) !== JSON.stringify(existing.documents || []) || projectNote !== (existing.projectNote || "")) {
     updates.push({
@@ -311,7 +321,8 @@ function saveTaskFromForm() {
     title: els.taskTitle.value.trim(),
     project: els.taskProject.value.trim(),
     assignee: els.taskAssignee.value.trim(),
-    dueDate: els.taskDueDate.value,
+    startDate,
+    dueDate,
     priority: els.taskPriority.value,
     status,
     projectNote,
@@ -342,6 +353,7 @@ function resetForm() {
   els.taskTitle.value = "";
   els.taskProject.value = "";
   els.taskAssignee.value = "";
+  els.taskStartDate.value = state.focusDate;
   els.taskDueDate.value = state.focusDate;
   els.taskPriority.value = "medium";
   els.taskStatus.value = "todo";
@@ -362,6 +374,7 @@ function editTask(id) {
   els.taskTitle.value = task.title;
   els.taskProject.value = task.project;
   els.taskAssignee.value = task.assignee;
+  els.taskStartDate.value = task.startDate || task.dueDate;
   els.taskDueDate.value = task.dueDate;
   els.taskPriority.value = task.priority;
   els.taskStatus.value = task.status;
@@ -734,7 +747,12 @@ function tableNoteText(total, visible, hidden, days) {
 function renderRow(task, index) {
   const overdue = isOverdue(task);
   const alarmDue = isAlarmDue(task);
-  const rowClass = `${overdue ? "overdue" : ""} ${task.status === "done" ? "done" : ""}`.trim();
+  const isToday = task.dueDate === todayInput();
+  const rowClass = [
+    isToday ? "today-task" : "",
+    overdue ? "overdue" : "",
+    task.status === "done" ? "done" : "",
+  ].filter(Boolean).join(" ");
 
   return `
     <tr class="${rowClass}">
@@ -745,10 +763,7 @@ function renderRow(task, index) {
       </td>
       <td>${escapeHtml(task.project)}</td>
       <td>${escapeHtml(task.assignee)}</td>
-      <td>
-        ${humanDate(task.dueDate)}
-        ${overdue ? `<br><span class="pill status-overdue">Terlambat</span>` : ""}
-      </td>
+      <td>${renderDateRangeCell(task, overdue)}</td>
       <td><span class="pill priority-${task.priority}">${priorities[task.priority] || "Normal"}</span></td>
       <td><span class="pill status-${task.status}">${statusLabel(task.status)}</span></td>
       <td class="project-note-cell">
@@ -771,6 +786,16 @@ function renderRow(task, index) {
         </div>
       </td>
     </tr>
+  `;
+}
+
+function renderDateRangeCell(task, overdue) {
+  return `
+    <div class="date-range-cell">
+      <div><span>Mulai</span><strong>${humanDate(task.startDate || task.dueDate)}</strong></div>
+      <div><span>Deadline</span><strong>${humanDate(task.dueDate)}</strong></div>
+      ${overdue ? `<span class="pill status-overdue">Terlambat</span>` : ""}
+    </div>
   `;
 }
 
@@ -846,12 +871,15 @@ function importData(event) {
 
 function normalizeTask(task) {
   const projectNote = String(task.projectNote || task.progressNote || legacyProgressNote(task.progress) || "");
+  const dueDate = task.dueDate || todayInput();
+  const startDate = task.startDate || inputDateFromIso(task.createdAt) || dueDate;
   return {
     id: task.id || createId(),
     title: task.title || "Tugas tanpa judul",
     project: task.project || "Project Umum",
     assignee: task.assignee || "Belum ditentukan",
-    dueDate: task.dueDate || todayInput(),
+    startDate,
+    dueDate,
     priority: priorities[task.priority] ? task.priority : "medium",
     status: statuses.some((status) => status.key === task.status) ? task.status : "todo",
     projectNote,
@@ -1138,20 +1166,32 @@ function humanDate(inputDate) {
   return new Intl.DateTimeFormat("id-ID", { day: "2-digit", month: "short", year: "numeric" }).format(date);
 }
 
+function inputDateFromIso(value) {
+  if (!value) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  date.setMinutes(date.getMinutes() - date.getTimezoneOffset());
+  return date.toISOString().slice(0, 10);
+}
+
 function compareDueDates(firstDate, secondDate) {
   const firstRank = dueDateRank(firstDate);
   const secondRank = dueDateRank(secondDate);
   if (firstRank !== secondRank) return firstRank - secondRank;
-  if (firstRank === 1) return String(secondDate || "").localeCompare(String(firstDate || ""));
+  if (firstRank === 3) return String(secondDate || "").localeCompare(String(firstDate || ""));
   return String(firstDate || "").localeCompare(String(secondDate || ""));
 }
 
 function dueDateRank(inputDate) {
-  if (!inputDate) return 3;
+  if (!inputDate) return 5;
   const today = todayInput();
+  const tomorrow = addDays(today, 1);
+  const yesterday = addDays(today, -1);
   if (inputDate === today) return 0;
-  if (inputDate < today) return 1;
-  return 2;
+  if (inputDate === tomorrow) return 1;
+  if (inputDate === yesterday) return 2;
+  if (inputDate < yesterday) return 3;
+  return 4;
 }
 
 function dateGroupLabel(inputDate) {
@@ -1160,7 +1200,7 @@ function dateGroupLabel(inputDate) {
   if (inputDate === todayInput()) return `Hari ini - ${label}`;
   if (inputDate === addDays(todayInput(), 1)) return `Besok - ${label}`;
   if (inputDate === addDays(todayInput(), -1)) return `Kemarin - ${label}`;
-  return label;
+  return `Tanggal lain - ${label}`;
 }
 
 function humanDateTime(inputDateTime) {
