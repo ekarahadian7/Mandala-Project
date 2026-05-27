@@ -16,8 +16,12 @@ const MAX_JSON_BODY_SIZE = 5 * 1024 * 1024;
 const MAX_UPLOAD_BODY_SIZE = 40 * 1024 * 1024;
 const MAX_UPLOAD_CHUNK_SIZE = 2 * 1024 * 1024;
 const MAX_UPLOAD_FILE_SIZE = 5 * 1024 * 1024 * 1024;
+const GOOGLE_DRIVE_FOLDER_ID = String(process.env.GOOGLE_DRIVE_FOLDER_ID || "");
+const GOOGLE_SERVICE_ACCOUNT_EMAIL = String(process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL || "");
+const GOOGLE_PRIVATE_KEY = String(process.env.GOOGLE_PRIVATE_KEY || "").replace(/\\n/g, "\n");
 
 const clients = new Set();
+let googleDriveToken = { accessToken: "", expiresAt: 0 };
 
 class HttpError extends Error {
   constructor(statusCode, message) {
@@ -87,6 +91,13 @@ const server = http.createServer(async (request, response) => {
     if (url.pathname === "/api/uploads/chunk" && request.method === "POST") {
       const file = await handleUploadChunk(request);
       return sendJson(response, file ? { complete: true, file } : { complete: false });
+    }
+
+    if (url.pathname === "/api/storage" && request.method === "GET") {
+      return sendJson(response, {
+        driveEnabled: isGoogleDriveEnabled(),
+        storage: isGoogleDriveEnabled() ? "google-drive" : "local",
+      });
     }
 
     if (url.pathname === "/api/events" && request.method === "GET") {
@@ -188,7 +199,7 @@ function normalizeDocument(documentItem) {
   if (typeof documentItem === "string") {
     const text = documentItem.trim();
     if (!text) return null;
-    return { name: fileNameFromUrl(text) || text, url: text, size: 0, type: "", uploadedAt: "" };
+    return { name: fileNameFromUrl(text) || text, url: text, size: 0, type: "", storage: documentStorageFromUrl(text), uploadedAt: "" };
   }
   const url = String(documentItem.url || "").trim();
   const name = String(documentItem.name || fileNameFromUrl(url) || "Dokumen").trim();
@@ -198,6 +209,7 @@ function normalizeDocument(documentItem) {
     url,
     size: Number(documentItem.size || 0),
     type: String(documentItem.type || ""),
+    storage: String(documentItem.storage || documentStorageFromUrl(url)),
     uploadedAt: String(documentItem.uploadedAt || ""),
   };
 }
@@ -207,6 +219,15 @@ function fileNameFromUrl(value) {
     const url = new URL(value);
     const name = decodeURIComponent(url.pathname.split("/").filter(Boolean).pop() || "");
     return name || "";
+  } catch {
+    return "";
+  }
+}
+
+function documentStorageFromUrl(value) {
+  try {
+    const host = new URL(value).hostname.toLowerCase();
+    return host.includes("drive.google.com") || host.includes("docs.google.com") ? "google-drive" : "link";
   } catch {
     return "";
   }
@@ -227,24 +248,31 @@ async function handleUploads(request) {
   const boundary = match[1] || match[2];
   const body = await readBodyBuffer(request, MAX_UPLOAD_BODY_SIZE);
   const parts = parseMultipart(body, boundary).filter((part) => part.filename && part.content.length);
-  await fs.mkdir(UPLOAD_DIR, { recursive: true });
-
   const files = [];
   for (const part of parts) {
     const originalName = sanitizeFileName(part.filename);
-    const storedName = `${Date.now()}-${crypto.randomBytes(5).toString("hex")}-${originalName}`;
-    const filePath = path.join(UPLOAD_DIR, storedName);
-    await fs.writeFile(filePath, part.content);
-    files.push({
-      name: originalName,
-      url: `/uploads/${encodeURIComponent(storedName)}`,
-      size: part.content.length,
-      type: part.contentType || "application/octet-stream",
-      uploadedAt: new Date().toISOString(),
-    });
+    files.push(await saveUploadedBuffer({
+      originalName,
+      content: part.content,
+      fileType: part.contentType || "application/octet-stream",
+    }));
   }
 
   return files;
+}
+
+async function saveUploadedBuffer({ originalName, content, fileType }) {
+  await fs.mkdir(UPLOAD_DIR, { recursive: true });
+  const storedName = `${Date.now()}-${crypto.randomBytes(5).toString("hex")}-${originalName}`;
+  const filePath = path.join(UPLOAD_DIR, storedName);
+  await writeBufferAtomic(filePath, content);
+  return publishStoredFile({
+    filePath,
+    storedName,
+    originalName,
+    fileType,
+    fileSize: content.length,
+  });
 }
 
 async function handleUploadChunk(request) {
@@ -322,13 +350,154 @@ async function assembleUploadChunks({ chunkDir, totalChunks, originalName, fileT
 
   await fs.rm(chunkDir, { recursive: true, force: true });
 
+  return publishStoredFile({
+    filePath,
+    storedName,
+    originalName,
+    fileType,
+    fileSize: fileSize || totalSize,
+  });
+}
+
+async function publishStoredFile({ filePath, storedName, originalName, fileType, fileSize }) {
+  if (isGoogleDriveEnabled()) {
+    try {
+      const driveFile = await uploadFileToGoogleDrive({ filePath, originalName, fileType, fileSize });
+      await fs.rm(filePath, { force: true });
+      return driveFile;
+    } catch (error) {
+      console.error("Google Drive upload failed. Keeping file in local storage.", error);
+    }
+  }
+
   return {
     name: originalName,
     url: `/uploads/${encodeURIComponent(storedName)}`,
-    size: fileSize || totalSize,
+    size: fileSize,
     type: fileType,
+    storage: "local",
     uploadedAt: new Date().toISOString(),
   };
+}
+
+function isGoogleDriveEnabled() {
+  return Boolean(GOOGLE_DRIVE_FOLDER_ID && GOOGLE_SERVICE_ACCOUNT_EMAIL && GOOGLE_PRIVATE_KEY);
+}
+
+async function uploadFileToGoogleDrive({ filePath, originalName, fileType, fileSize }) {
+  const accessToken = await getGoogleDriveAccessToken();
+  const metadata = {
+    name: originalName,
+    parents: [GOOGLE_DRIVE_FOLDER_ID],
+  };
+  const sessionResponse = await fetch("https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable&fields=id,name,webViewLink,webContentLink", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      "Content-Type": "application/json; charset=utf-8",
+      "X-Upload-Content-Type": fileType,
+      "X-Upload-Content-Length": String(fileSize),
+    },
+    body: JSON.stringify(metadata),
+  });
+
+  if (!sessionResponse.ok) {
+    throw new Error(`Google Drive session failed: ${sessionResponse.status} ${await sessionResponse.text()}`);
+  }
+
+  const uploadUrl = sessionResponse.headers.get("location");
+  if (!uploadUrl) throw new Error("Google Drive upload URL missing");
+
+  const uploadResponse = await fetch(uploadUrl, {
+    method: "PUT",
+    headers: {
+      "Content-Type": fileType,
+      "Content-Length": String(fileSize),
+    },
+    body: createReadStream(filePath),
+    duplex: "half",
+  });
+
+  if (!uploadResponse.ok) {
+    throw new Error(`Google Drive upload failed: ${uploadResponse.status} ${await uploadResponse.text()}`);
+  }
+
+  const driveFile = await uploadResponse.json();
+  await shareGoogleDriveFile(driveFile.id, accessToken).catch((error) => {
+    console.warn("Google Drive sharing skipped.", error);
+  });
+
+  return {
+    name: originalName,
+    url: driveFile.webViewLink || `https://drive.google.com/file/d/${driveFile.id}/view`,
+    downloadUrl: driveFile.webContentLink || "",
+    size: fileSize,
+    type: fileType,
+    storage: "google-drive",
+    uploadedAt: new Date().toISOString(),
+  };
+}
+
+async function getGoogleDriveAccessToken() {
+  const now = Math.floor(Date.now() / 1000);
+  if (googleDriveToken.accessToken && googleDriveToken.expiresAt - 60 > now) {
+    return googleDriveToken.accessToken;
+  }
+
+  const assertion = createGoogleJwt(now);
+  const tokenResponse = await fetch("https://oauth2.googleapis.com/token", {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({
+      grant_type: "urn:ietf:params:oauth:grant-type:jwt-bearer",
+      assertion,
+    }).toString(),
+  });
+
+  if (!tokenResponse.ok) {
+    throw new Error(`Google token failed: ${tokenResponse.status} ${await tokenResponse.text()}`);
+  }
+
+  const token = await tokenResponse.json();
+  googleDriveToken = {
+    accessToken: token.access_token,
+    expiresAt: now + Number(token.expires_in || 3600),
+  };
+  return googleDriveToken.accessToken;
+}
+
+function createGoogleJwt(now) {
+  const header = base64Url(JSON.stringify({ alg: "RS256", typ: "JWT" }));
+  const claim = base64Url(JSON.stringify({
+    iss: GOOGLE_SERVICE_ACCOUNT_EMAIL,
+    scope: "https://www.googleapis.com/auth/drive.file",
+    aud: "https://oauth2.googleapis.com/token",
+    iat: now,
+    exp: now + 3600,
+  }));
+  const input = `${header}.${claim}`;
+  const signature = crypto.createSign("RSA-SHA256").update(input).sign(GOOGLE_PRIVATE_KEY);
+  return `${input}.${base64Url(signature)}`;
+}
+
+function base64Url(value) {
+  return Buffer.from(value)
+    .toString("base64")
+    .replace(/=/g, "")
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_");
+}
+
+async function shareGoogleDriveFile(fileId, accessToken) {
+  if (!fileId) return;
+  await fetch(`https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileId)}/permissions`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      "Content-Type": "application/json; charset=utf-8",
+    },
+    body: JSON.stringify({ role: "reader", type: "anyone" }),
+  });
 }
 
 async function readCompletedUpload(uploadId) {
