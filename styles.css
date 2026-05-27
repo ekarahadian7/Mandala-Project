@@ -358,9 +358,25 @@ button:focus-visible {
   background: #fff8f7;
 }
 
+.task-table tr.today-task td {
+  background: #f4f9ff;
+}
+
+.task-table tr.today-task td:first-child {
+  box-shadow: inset 4px 0 0 var(--blue);
+}
+
+.task-table tr.today-task .task-title {
+  color: var(--blue);
+}
+
 .task-table tr.done td {
   color: #52606d;
   background: #fbfcfd;
+}
+
+.task-table tr.done.today-task td {
+  background: #f6f9fc;
 }
 
 .task-title {
@@ -372,10 +388,34 @@ button:focus-visible {
 
 .task-notes,
 .document-cell,
+.date-range-cell,
 .alarm-cell {
   max-width: 340px;
   color: var(--muted);
   line-height: 1.42;
+}
+
+.date-range-cell {
+  display: grid;
+  gap: 6px;
+  min-width: 150px;
+}
+
+.date-range-cell div {
+  display: grid;
+  gap: 1px;
+}
+
+.date-range-cell span {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 850;
+  text-transform: uppercase;
+}
+
+.date-range-cell strong {
+  color: var(--ink);
+  font-weight: 850;
 }
 
 .document-cell {
